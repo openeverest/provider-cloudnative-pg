@@ -10,3 +10,11 @@ components:
         type: pgbouncer
         parametersSchema: PgBouncerParameters
 name: provider-cloudnative-pg
+
+# Component types: the kind of the software each type runs, published as
+# Provider.spec.componentTypes.<type>.kind and matched by monitoring classes
+# (OpenTelemetry db.system.name for databases). Version catalogs stay in
+# versions.yaml. pgbouncer declares no kind until it publishes metrics.
+componentTypes:
+  postgresql:
+    kind: postgresql
