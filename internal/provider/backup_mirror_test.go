@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg/barman"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/common"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 func TestMirror(t *testing.T) {

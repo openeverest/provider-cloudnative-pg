@@ -19,8 +19,8 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	replicaset "github.com/adityapimpalkar/provider-cloudnative-pg/definition/topologies/replicaSet"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	replicaset "github.com/openeverest/provider-cloudnative-pg/definition/topologies/replicaSet"
 )
 
 const (

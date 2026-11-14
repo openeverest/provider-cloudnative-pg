@@ -8,7 +8,7 @@ import (
 	"github.com/AlekSi/pointer"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 func TestParsePgHBA(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/common"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // Image volumes need extension_control_path, added in PostgreSQL 18.

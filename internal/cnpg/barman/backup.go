@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/AlekSi/pointer"
-	cnpgbarmanplugin "github.com/adityapimpalkar/provider-cloudnative-pg/definition/backupclasses/cnpg-barman-plugin"
 	barmanapi "github.com/cloudnative-pg/barman-cloud/pkg/api"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
@@ -14,6 +13,7 @@ import (
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
+	cnpgbarmanplugin "github.com/openeverest/provider-cloudnative-pg/definition/backupclasses/cnpg-barman-plugin"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"

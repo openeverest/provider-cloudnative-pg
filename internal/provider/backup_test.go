@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg/barman"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
 )
 
 const testNamespace = "ns"

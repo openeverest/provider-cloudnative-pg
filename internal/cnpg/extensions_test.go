@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 var on = &components.ExtensionToggle{Enabled: true}

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg/barman"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
