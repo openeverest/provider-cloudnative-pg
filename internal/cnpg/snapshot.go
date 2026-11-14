@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 const volumeSnapshotAPIGroup = "snapshot.storage.k8s.io"

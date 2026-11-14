@@ -5,7 +5,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 // restarts reports whether turning the extension on or off restarts the

@@ -9,7 +9,7 @@ import (
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/reconciler"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/provider"
+	"github.com/openeverest/provider-cloudnative-pg/internal/provider"
 )
 
 func main() {

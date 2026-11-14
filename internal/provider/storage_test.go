@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/AlekSi/pointer"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )

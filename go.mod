@@ -1,4 +1,4 @@
-module github.com/adityapimpalkar/provider-cloudnative-pg
+module github.com/openeverest/provider-cloudnative-pg
 
 go 1.27.1
 

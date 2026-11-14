@@ -3,7 +3,7 @@ package cnpg
 import (
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 // RejectNonTLSRule refuses every TCP connection that is not encrypted. CNPG

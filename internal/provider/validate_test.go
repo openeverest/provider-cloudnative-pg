@@ -14,7 +14,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller/validationtest"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/common"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 const (

@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/AlekSi/pointer"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

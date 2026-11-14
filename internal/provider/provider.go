@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	barman "github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg/barman"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
 
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 
@@ -25,9 +25,9 @@ import (
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/common"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // Compile-time check that Provider implements the required interface.

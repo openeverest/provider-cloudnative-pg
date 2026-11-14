@@ -8,7 +8,7 @@
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange)](https://github.com/openeverest/openeverest)
 [![CI](https://github.com/openeverest/provider-cloudnative-pg/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/openeverest/provider-cloudnative-pg/actions/workflows/build.yaml)
 [![Release](https://img.shields.io/github/v/release/openeverest/provider-cloudnative-pg)](https://github.com/openeverest/provider-cloudnative-pg/releases)
-[![Go Reference](https://pkg.go.dev/badge/github.com/adityapimpalkar/provider-cloudnative-pg.svg)](https://pkg.go.dev/github.com/adityapimpalkar/provider-cloudnative-pg)
+[![Go Reference](https://pkg.go.dev/badge/github.com/openeverest/provider-cloudnative-pg.svg)](https://pkg.go.dev/github.com/openeverest/provider-cloudnative-pg)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 Run **PostgreSQL** on Kubernetes through

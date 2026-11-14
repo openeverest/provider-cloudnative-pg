@@ -11,10 +11,10 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg"
-	barman "github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg/barman"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/common"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
+	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 var _ controller.ReferenceValidator = (*Provider)(nil)

@@ -10,7 +10,7 @@ import (
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 // pgStatStatementsParameterPrefix: CloudNativePG preloads pg_stat_statements

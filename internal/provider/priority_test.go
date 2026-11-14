@@ -8,8 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
-	"github.com/adityapimpalkar/provider-cloudnative-pg/internal/cnpg"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 )
 
 func TestPriorityClassName(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 func TestValidateSynchronous(t *testing.T) {

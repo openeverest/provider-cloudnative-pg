@@ -10,7 +10,7 @@ import (
 	pgconfig "github.com/cloudnative-pg/cloudnative-pg/pkg/postgres"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/adityapimpalkar/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 const (
