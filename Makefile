@@ -7,7 +7,7 @@ $(LOCALBIN):
 CONTAINER_TOOL ?= docker
 
 # Image URL to use for building/pushing image targets
-IMG ?= ghcr.io/adityapimpalkar/provider-cloudnative-pg:latest
+IMG ?= ghcr.io/openeverest/provider-cloudnative-pg:latest
 _IMG_REPO = $(firstword $(subst :, ,$(IMG)))
 _IMG_TAG = $(lastword $(subst :, ,$(IMG)))
 

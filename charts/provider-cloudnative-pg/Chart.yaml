@@ -8,9 +8,9 @@ keywords:
   - openeverest
   - provider
   - database
-home: https://github.com/adityapimpalkar/provider-cloudnative-pg
+home: https://github.com/openeverest/provider-cloudnative-pg
 sources:
-  - https://github.com/adityapimpalkar/provider-cloudnative-pg
+  - https://github.com/openeverest/provider-cloudnative-pg
 maintainers:
   - name: Aditya Pimpalkar
 dependencies:

@@ -1,7 +1,7 @@
 HELM ?= helm
 
 # values to override
-IMAGE_PREFIX ?= ghcr.io/adityapimpalkar
+IMAGE_PREFIX ?= ghcr.io/openeverest
 PROVIDER_IMAGE_NAME ?= provider-cloudnative-pg
 VERSION ?= 0.1.0
 CHART_VERSION ?= $(VERSION)
