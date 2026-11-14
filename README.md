@@ -6,8 +6,8 @@
 > supported upgrade path between versions yet. Not for production use.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange)](https://github.com/openeverest/openeverest)
-[![CI](https://github.com/AdityaPimpalkar/provider-cloudnative-pg/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/AdityaPimpalkar/provider-cloudnative-pg/actions/workflows/build.yaml)
-[![Release](https://img.shields.io/github/v/release/AdityaPimpalkar/provider-cloudnative-pg)](https://github.com/AdityaPimpalkar/provider-cloudnative-pg/releases)
+[![CI](https://github.com/openeverest/provider-cloudnative-pg/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/openeverest/provider-cloudnative-pg/actions/workflows/build.yaml)
+[![Release](https://img.shields.io/github/v/release/openeverest/provider-cloudnative-pg)](https://github.com/openeverest/provider-cloudnative-pg/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/adityapimpalkar/provider-cloudnative-pg.svg)](https://pkg.go.dev/github.com/adityapimpalkar/provider-cloudnative-pg)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
@@ -257,7 +257,7 @@ The provider chart is published as an OCI artifact:
 
 ```bash
 helm install provider-cloudnative-pg \
-  oci://ghcr.io/adityapimpalkar/charts/provider-cloudnative-pg \
+  oci://ghcr.io/openeverest/charts/provider-cloudnative-pg \
   --version 0.3.4 \
   --namespace everest-system
 ```
@@ -283,7 +283,7 @@ Upgrade and uninstall:
 
 ```bash
 helm upgrade provider-cloudnative-pg \
-  oci://ghcr.io/adityapimpalkar/charts/provider-cloudnative-pg --version 0.3.4
+  oci://ghcr.io/openeverest/charts/provider-cloudnative-pg --version 0.3.4
 helm uninstall provider-cloudnative-pg --namespace everest-system
 ```
 
