@@ -71,7 +71,7 @@ spec:
               set -e
               q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
               expect() { got="$(q "$1")"; [ "$got" = "$2" ] || { echo "query: $1"; echo "got: $got, want: $2"; exit 1; }; }
-              expect "SHOW server_version" "18.7"
+              expect "SELECT split_part(current_setting('server_version'), ' ', 1)" "18.7"
               # Data written before the upgrade
               expect "SELECT round(ST_X(ST_Transform(geom, 3857))) FROM places WHERE id = 1" "111319"
               q "CREATE TABLE ivm_base (x int)"
