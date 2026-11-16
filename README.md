@@ -92,6 +92,27 @@ can bump or mirror images with `helm upgrade`, or set `extensionCatalog.create=f
 `sql-version.extensions.openeverest.io/<major>.<name>` annotations), without upgrading the
 provider. A new image restarts the instances that use it.
 
+PostgreSQL minor releases can break the extension ABI (18.7 did), so one extension can have
+several builds per major. Give each one a `minVersion` (inclusive) and/or `maxVersion` (exclusive)
+PostgreSQL release, and set `extension` on entries whose `name` differs from the extension they
+provide:
+
+```yaml
+- name: pg-cron                # PostgreSQL 18.7+
+  minVersion: "18.7"
+  image: {reference: ghcr.io/solanicaio/pg-cron:<18.7 build>}
+- name: pg-cron-pre-18-7       # older 18.x
+  extension: pg-cron
+  maxVersion: "18.7"
+  image: {reference: ghcr.io/solanicaio/pg-cron:<older build>}
+```
+
+The provider mounts the one entry that covers the instance's version under the extension's name,
+so a minor upgrade swaps the PostgreSQL and extension images in one rollout. No match, or more
+than one, is a validation error. In a self-managed catalog these go in the
+`extension.`, `min-version.` and `max-version.extensions.openeverest.io/<major>.<name>`
+annotations.
+
 | Extension | Toggle | Status | Enable on a running instance | Disable | Notes |
 |---|---|---|---|---|---|
 | pgvector | `pgvector` | ✅ | ✅ no restart | ❌ | PG 14–18, bundled in the `standard` images: no image change. See [examples/instance-pgvector.yaml](examples/instance-pgvector.yaml) |
@@ -328,7 +349,7 @@ metadata:
 spec:
   providerRef:
     name: provider-cloudnative-pg
-  version: "18.6"
+  version: "18.7"
   components:
     engine:
       type: postgresql
@@ -535,7 +556,8 @@ the Pooler also refuses unencrypted clients (`client_tls_sslmode=require`).
 
 | Version bundle | Default | postgresql |
 |---|---|---|
-| `18.6` | ✅ | `18.6` (`ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie`) |
+| `18.7` | ✅ | `18.7` (`ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie`) |
+| `18.6` | | `18.6` |
 | `18.4` | | `18.4` |
 | `17.10` | | `17.10` |
 | `16.14` | | `16.14` |

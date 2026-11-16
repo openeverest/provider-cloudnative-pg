@@ -4,7 +4,7 @@ spec:
   componentTypes:
     pgbouncer: {}
     postgresql:
-      defaultVersion: "18.6"
+      defaultVersion: "18.7"
       versions:
         - image: ghcr.io/cloudnative-pg/postgresql:14.23-standard-trixie
           version: "14.23"
@@ -18,6 +18,8 @@ spec:
           version: "18.4"
         - image: ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie
           version: "18.6"
+        - image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+          version: "18.7"
   components:
     engine:
       parametersSchema:
@@ -1224,7 +1226,7 @@ spec:
               type: string
           type: object
       type: pgbouncer
-  defaultVersion: "18.6"
+  defaultVersion: "18.7"
   release:
     version: 0.3.4
   topologies:
@@ -1965,6 +1967,9 @@ spec:
         - pooler
         - advanced
   versions:
+    - components:
+        engine: "18.7"
+      name: "18.7"
     - components:
         engine: "18.6"
       name: "18.6"
