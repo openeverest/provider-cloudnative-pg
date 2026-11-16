@@ -1,6 +1,7 @@
 package cnpg
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strconv"
@@ -22,6 +23,17 @@ const imageVolumePostgresMajor = "18"
 // CREATE EXTENSION version of each image as <prefix><major>.<extension name>;
 // ExtensionConfiguration has no field for it.
 const SQLVersionAnnotationPrefix = "sql-version.extensions.openeverest.io/"
+
+// A catalog entry can be limited to a range of PostgreSQL releases, so several
+// builds of one extension can coexist for a major (a minor release can break
+// the extension ABI, as 18.7 did). The annotations, keyed like the SQL
+// version, hold the extension the entry provides when its name differs, and
+// the inclusive minimum and exclusive maximum PostgreSQL release (major.minor).
+const (
+	ExtensionAnnotationPrefix  = "extension.extensions.openeverest.io/"
+	MinVersionAnnotationPrefix = "min-version.extensions.openeverest.io/"
+	MaxVersionAnnotationPrefix = "max-version.extensions.openeverest.io/"
+)
 
 // postgresSuperuser is the superuser CloudNativePG runs initdb and the Database
 // controller as (not configurable), so it owns the schemas CREATE EXTENSION makes.
@@ -297,8 +309,10 @@ type ExtensionImage struct {
 type ExtensionImages map[string]ExtensionImage
 
 // ResolveExtensionImages looks up the enabled image-volume extensions in the
-// named ClusterImageCatalog, for the instance's PostgreSQL major. The catalog is
-// only read when such an extension is enabled.
+// named ClusterImageCatalog, for the instance's PostgreSQL major and the entry
+// whose version range covers the instance's release. The selected entry is
+// returned under the extension's name, so the mount path doesn't depend on the
+// entry. The catalog is only read when such an extension is enabled.
 func ResolveExtensionImages(
 	c *controller.Context, catalogName string, custom *components.CNPGCustomSpec, engineVersion, instanceVersion string,
 ) (ExtensionImages, error) {
@@ -323,20 +337,54 @@ func ResolveExtensionImages(
 		return nil, fmt.Errorf("get the extensions ClusterImageCatalog %q: %w", catalogName, err)
 	}
 
+	version := postgresVersion(engineVersion, instanceVersion)
 	entries, _ := catalog.Spec.FindExtensionsForMajor(majorNumber)
 	images := ExtensionImages{}
 	for _, ext := range wanted {
-		i := slices.IndexFunc(entries, func(e cnpgv1.ExtensionConfiguration) bool { return e.Name == ext.catalogEntry })
-		if i < 0 {
-			return nil, fmt.Errorf("extensions.%s: ClusterImageCatalog %q has no %q extension for PostgreSQL %d",
-				ext.field, catalogName, ext.catalogEntry, majorNumber)
+		var matches []cnpgv1.ExtensionConfiguration
+		for _, entry := range entries {
+			if catalogEntryMatches(catalog.Annotations, major, entry.Name, ext.catalogEntry, version) {
+				matches = append(matches, entry)
+			}
 		}
+		switch len(matches) {
+		case 0:
+			return nil, fmt.Errorf("extensions.%s: ClusterImageCatalog %q has no %q extension for PostgreSQL %s",
+				ext.field, catalogName, ext.catalogEntry, version)
+		case 1:
+		default:
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.Name
+			}
+			return nil, fmt.Errorf("extensions.%s: ClusterImageCatalog %q has overlapping %q extension entries for PostgreSQL %s: %s",
+				ext.field, catalogName, ext.catalogEntry, version, strings.Join(names, ", "))
+		}
+		config := *matches[0].DeepCopy()
+		entryName := config.Name
+		config.Name = ext.catalogEntry
 		images[ext.catalogEntry] = ExtensionImage{
-			Config:     entries[i],
-			SQLVersion: catalog.Annotations[SQLVersionAnnotationPrefix+major+"."+ext.catalogEntry],
+			Config:     config,
+			SQLVersion: catalog.Annotations[SQLVersionAnnotationPrefix+major+"."+entryName],
 		}
 	}
 	return images, nil
+}
+
+// catalogEntryMatches reports whether the catalog entry named entryName
+// provides extension for PostgreSQL version, per its annotations.
+func catalogEntryMatches(annotations map[string]string, major, entryName, extension, version string) bool {
+	key := major + "." + entryName
+	if cmp.Or(annotations[ExtensionAnnotationPrefix+key], entryName) != extension {
+		return false
+	}
+	if minimum := annotations[MinVersionAnnotationPrefix+key]; minimum != "" && !versionAtLeast(version, minimum) {
+		return false
+	}
+	if maximum := annotations[MaxVersionAnnotationPrefix+key]; maximum != "" && versionAtLeast(version, maximum) {
+		return false
+	}
+	return true
 }
 
 // ApplyExtensions mounts the extension images of the enabled extensions and

@@ -358,21 +358,39 @@ func TestValidateExtensionsAtCreation(t *testing.T) {
 func TestResolveExtensionImages(t *testing.T) {
 	catalog := &cnpgv1.ClusterImageCatalog{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "extensions",
-			Annotations: map[string]string{SQLVersionAnnotationPrefix + "18.age": "1.8.0"},
+			Name: "extensions",
+			Annotations: map[string]string{
+				SQLVersionAnnotationPrefix + "18.age":              "1.8.0",
+				SQLVersionAnnotationPrefix + "18.pg-cron":          "1.6",
+				MinVersionAnnotationPrefix + "18.pg-cron":          "18.7",
+				SQLVersionAnnotationPrefix + "18.pg-cron-pre-18-7": "1.5",
+				ExtensionAnnotationPrefix + "18.pg-cron-pre-18-7":  "pg-cron",
+				MaxVersionAnnotationPrefix + "18.pg-cron-pre-18-7": "18.7",
+				ExtensionAnnotationPrefix + "18.pg-repack-a":       "pg-repack",
+				ExtensionAnnotationPrefix + "18.pg-repack-b":       "pg-repack",
+				MaxVersionAnnotationPrefix + "18.pg-repack-b":      "18.7",
+			},
 		},
 		Spec: cnpgv1.ImageCatalogSpec{Images: []cnpgv1.CatalogImage{
 			{Major: 17, Image: "pg:17", Extensions: []cnpgv1.ExtensionConfiguration{{Name: "pg-ivm"}}},
 			{Major: 18, Image: "pg:18", Extensions: []cnpgv1.ExtensionConfiguration{
 				{Name: "age", ImageVolumeSource: corev1.ImageVolumeSource{Reference: "registry.example/age:1.8.0"}},
 				{Name: "wal2json"},
+				{Name: "pg-cron", ImageVolumeSource: corev1.ImageVolumeSource{Reference: "registry.example/pg-cron:new"}},
+				{Name: "pg-cron-pre-18-7", ImageVolumeSource: corev1.ImageVolumeSource{Reference: "registry.example/pg-cron:old"}},
+				{Name: "pg-repack-a"},
+				{Name: "pg-repack-b"},
 			}},
 		}},
+	}
+	cron := func(reference string) cnpgv1.ExtensionConfiguration {
+		return cnpgv1.ExtensionConfiguration{Name: "pg-cron", ImageVolumeSource: corev1.ImageVolumeSource{Reference: reference}}
 	}
 	tests := []struct {
 		name       string
 		custom     *components.CNPGCustomSpec
 		catalog    string
+		version    string
 		want       ExtensionImages
 		wantErr    bool
 		noCatalogs bool
@@ -386,6 +404,23 @@ func TestResolveExtensionImages(t *testing.T) {
 				"wal2json": {Config: catalog.Spec.Images[1].Extensions[1]},
 			},
 		},
+		{
+			name: "build for releases before the maximum, under the extension name", custom: withExtensions(components.ExtensionsSpec{PgCron: on}),
+			version: "18.6", want: ExtensionImages{"pg-cron": {Config: cron("registry.example/pg-cron:old"), SQLVersion: "1.5"}},
+		},
+		{
+			name: "build from the minimum", custom: withExtensions(components.ExtensionsSpec{PgCron: on}),
+			version: "18.7", want: ExtensionImages{"pg-cron": {Config: cron("registry.example/pg-cron:new"), SQLVersion: "1.6"}},
+		},
+		{
+			name: "minimum compares numerically", custom: withExtensions(components.ExtensionsSpec{PgCron: on}),
+			version: "18.10", want: ExtensionImages{"pg-cron": {Config: cron("registry.example/pg-cron:new"), SQLVersion: "1.6"}},
+		},
+		{name: "overlapping entries", custom: withExtensions(components.ExtensionsSpec{PgRepack: on}), version: "18.6", wantErr: true},
+		{
+			name: "range leaves one entry", custom: withExtensions(components.ExtensionsSpec{PgRepack: on}), version: "18.7",
+			want: ExtensionImages{"pg-repack": {Config: cnpgv1.ExtensionConfiguration{Name: "pg-repack"}}},
+		},
 		{name: "missing for the major", custom: withExtensions(components.ExtensionsSpec{PgIVM: on}), wantErr: true},
 		{name: "missing catalog", custom: withExtensions(components.ExtensionsSpec{AGE: on}), catalog: "other", wantErr: true},
 	}
@@ -397,7 +432,7 @@ func TestResolveExtensionImages(t *testing.T) {
 			}
 			c, _ := newExtensionsTestContext(t, objects...)
 			name := cmp.Or(tt.catalog, "extensions")
-			got, err := ResolveExtensionImages(c, name, tt.custom, "18.4", "")
+			got, err := ResolveExtensionImages(c, name, tt.custom, cmp.Or(tt.version, "18.4"), "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ResolveExtensionImages() error = %v, wantErr %t", err, tt.wantErr)
 			}

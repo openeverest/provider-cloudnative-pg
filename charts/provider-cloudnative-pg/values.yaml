@@ -113,7 +113,11 @@ extensionCatalog:
   # -- Entries per PostgreSQL major. `image` is required by CloudNativePG but
   # unused: the provider picks the PostgreSQL image from the Instance version.
   # Extension entries are CloudNativePG ExtensionConfigurations plus
-  # `sqlVersion`, the CREATE EXTENSION version (empty for the image default).
+  # `sqlVersion`, the CREATE EXTENSION version (empty for the image default),
+  # and optionally `minVersion` (inclusive) / `maxVersion` (exclusive), the
+  # PostgreSQL releases (major.minor) a build runs on, and `extension`, the
+  # extension an entry provides when its name differs (e.g. pg-cron-pre-18-7).
+  # Exactly one entry must cover each version an extension is enabled on.
   images:
     # Trixie builds from the upstream catalog
     # image-catalogs-extensions/catalog-minimal-trixie.yaml in
