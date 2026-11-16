@@ -349,7 +349,7 @@ metadata:
 spec:
   providerRef:
     name: provider-cloudnative-pg
-  version: "18.6"
+  version: "18.7"
   components:
     engine:
       type: postgresql
@@ -556,7 +556,8 @@ the Pooler also refuses unencrypted clients (`client_tls_sslmode=require`).
 
 | Version bundle | Default | postgresql |
 |---|---|---|
-| `18.6` | ✅ | `18.6` (`ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie`) |
+| `18.7` | ✅ | `18.7` (`ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie`) |
+| `18.6` | | `18.6` |
 | `18.4` | | `18.4` |
 | `17.10` | | `17.10` |
 | `16.14` | | `16.14` |

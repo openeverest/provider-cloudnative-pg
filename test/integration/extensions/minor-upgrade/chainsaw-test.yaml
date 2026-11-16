@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# A PostgreSQL minor upgrade across an extension ABI break (18.6 -> 18.7):
+# the provider swaps each extension to the catalog entry for the new release
+# in the same rollout, and CloudNativePG updates the SQL extensions. Needs
+# PostgreSQL 18 and Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the
+# feature gate, and containerd 2.1+).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: extensions-minor-upgrade
+spec:
+  timeouts:
+    assert: 10m
+    cleanup: 3m
+  steps:
+    - name: create-on-18-6
+      try:
+        - apply:
+            file: 00-instance.yaml
+        - assert:
+            file: 00-assert.yaml
+        - script:
+            timeout: 2m
+            content: |
+              set -e
+              q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
+              expect() { got="$(q "$1")"; [ "$got" = "$2" ] || { echo "query: $1"; echo "got: $got, want: $2"; exit 1; }; }
+              refs="$(kubectl get cluster ext-upgrade -n "$NAMESPACE" -o jsonpath='{.spec.postgresql.extensions[*].image.reference}')"
+              echo "$refs" | grep -q 'postgis-extension:3.6.4-' || { echo "unexpected images: $refs"; exit 1; }
+              expect "SELECT extversion FROM pg_extension WHERE extname = 'postgis'" "3.6.4"
+              q "CREATE TABLE places (id int, geom geometry(Point, 4326))"
+              q "INSERT INTO places VALUES (1, ST_SetSRID(ST_MakePoint(1, 0), 4326))"
+      catch:
+        - script:
+            content: kubectl get instance,cluster,database,pod -n $NAMESPACE -o wide
+        - script:
+            content: kubectl get database/ext-upgrade-extensions -n $NAMESPACE -o yaml
+
+    - name: upgrade-to-18-7
+      try:
+        - patch:
+            resource:
+              apiVersion: core.openeverest.io/v1alpha1
+              kind: Instance
+              metadata:
+                name: ext-upgrade
+              spec:
+                version: "18.7"
+        - script:
+            timeout: 10m
+            content: |
+              set -e
+              # Wait for the rollout: the pod runs 18.7 and the extensions are updated.
+              q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
+              for i in $(seq 1 120); do
+                image="$(kubectl get pod ext-upgrade-1 -n "$NAMESPACE" -o jsonpath='{.spec.containers[?(@.name=="postgres")].image}' 2>/dev/null || true)"
+                version="$(q "SELECT extversion FROM pg_extension WHERE extname = 'postgis'" 2>/dev/null || true)"
+                case "$image" in *18.7-standard-trixie) [ "$version" = "3.7.0" ] && break ;; esac
+                sleep 5
+              done
+              echo "image: $image, postgis: $version"
+              case "$image" in *18.7-standard-trixie) ;; *) exit 1 ;; esac
+              [ "$version" = "3.7.0" ]
+              refs="$(kubectl get cluster ext-upgrade -n "$NAMESPACE" -o jsonpath='{.spec.postgresql.extensions[*].image.reference}')"
+              echo "$refs" | grep -q 'postgis-extension:3.7.0-' || { echo "unexpected images: $refs"; exit 1; }
+        - assert:
+            file: 00-assert.yaml
+        - script:
+            timeout: 2m
+            content: |
+              set -e
+              q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
+              expect() { got="$(q "$1")"; [ "$got" = "$2" ] || { echo "query: $1"; echo "got: $got, want: $2"; exit 1; }; }
+              expect "SELECT split_part(current_setting('server_version'), ' ', 1)" "18.7"
+              # Data written before the upgrade
+              expect "SELECT round(ST_X(ST_Transform(geom, 3857))) FROM places WHERE id = 1" "111319"
+              q "CREATE TABLE ivm_base (x int)"
+              q "SELECT pgivm.create_immv('ivm_view', 'SELECT count(*) AS n FROM ivm_base')"
+              q "INSERT INTO ivm_base VALUES (1), (2)"
+              expect "SELECT n FROM ivm_view" "2"
+              # pg_cron and AGE call the symbols 18.7 added (heap_datum_check)
+              q "SELECT cron.schedule('noop', '1 seconds', 'SELECT 1')"
+              q "SELECT cron.unschedule('noop')"
+              kubectl exec -i -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAq <<'SQL'
+              SET search_path = ag_catalog, "$user", public;
+              SELECT create_graph('upgraded');
+              SELECT * FROM cypher('upgraded', $$ CREATE (:N {name: 'a'}) $$) AS (v agtype);
+              SQL
+      catch:
+        - script:
+            content: kubectl get instance,cluster,database,pod -n $NAMESPACE -o wide
+        - script:
+            content: kubectl get cluster/ext-upgrade -n $NAMESPACE -o yaml
+        - script:
+            content: kubectl get database/ext-upgrade-extensions -n $NAMESPACE -o yaml
+        - script:
+            content: kubectl logs -n $NAMESPACE ext-upgrade-1 -c postgres --tail=100

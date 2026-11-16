@@ -124,8 +124,12 @@ extensionCatalog:
     # https://github.com/cloudnative-pg/artifacts; AGE, TimescaleDB
     # Community, pg_cron and pg_repack from
     # https://github.com/solanicaio/postgresql-extensions.
+    # PostgreSQL 18.7 changed the extension ABI: builds for 18.7 don't load
+    # on older releases and older builds are unsafe on 18.7, so each
+    # extension has a build per range (`*-pre-18-7` for older releases).
+    # TimescaleDB keeps one entry until 18.7 builds are released.
     - major: 18
-      image: ghcr.io/cloudnative-pg/postgresql:18.4-standard-trixie
+      image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
       extensions:
         - name: timescaledb-oss
           sqlVersion: "2.30.1"
@@ -138,6 +142,20 @@ extensionCatalog:
           image:
             reference: ghcr.io/solanicaio/timescaledb:2.31.0-202610210913-18-trixie@sha256:27f856054ab4cc274a44b59114bb9574e0b96ab5ebd7063b67ba146dd1efba62
         - name: postgis
+          minVersion: "18.7"
+          sqlVersion: "3.7.0"
+          image:
+            reference: ghcr.io/cloudnative-pg/postgis-extension:3.7.0-202611160937-18-trixie@sha256:36ba894fc359b9ddedc41842a6debbc5a64cee30526d7efd80b09ef3207a43f2
+          ld_library_path:
+            - system
+          env:
+            - name: GDAL_DATA
+              value: ${image_root}/share/gdal
+            - name: PROJ_DATA
+              value: ${image_root}/share/proj
+        - name: postgis-pre-18-7
+          extension: postgis
+          maxVersion: "18.7"
           sqlVersion: "3.6.4"
           image:
             reference: ghcr.io/cloudnative-pg/postgis-extension:3.6.4-202610110422-18-trixie@sha256:84a8e286d79aaec6fe824a792179d11252745a0d2b139d88692424fa61494df0
@@ -149,25 +167,66 @@ extensionCatalog:
             - name: PROJ_DATA
               value: ${image_root}/share/proj
         - name: pgrouting
+          minVersion: "18.7"
+          sqlVersion: "4.0.2"
+          image:
+            reference: ghcr.io/cloudnative-pg/pgrouting:4.0.2-202611160937-18-trixie@sha256:6b61e53579d22efbed716921385f8ffefbdd0acca2bebc47483c5da042494605
+        - name: pgrouting-pre-18-7
+          extension: pgrouting
+          maxVersion: "18.7"
           sqlVersion: "4.0.1"
           image:
             reference: ghcr.io/cloudnative-pg/pgrouting:4.0.1-202610110422-18-trixie@sha256:a9e9f2b786c213bebcb3baffe09d04de844c16bf8420c7bdbd98122c2aa704a1
         - name: pg-ivm
+          minVersion: "18.7"
+          sqlVersion: "1.17"
+          image:
+            reference: ghcr.io/cloudnative-pg/pg-ivm:1.17-202611160937-18-trixie@sha256:c95b38558f5f614e0354e1a1ec27214f038a66bb956af44c9ff91c4878254eef
+        - name: pg-ivm-pre-18-7
+          extension: pg-ivm
+          maxVersion: "18.7"
           sqlVersion: "1.15"
           image:
             reference: ghcr.io/cloudnative-pg/pg-ivm:1.15-202610110422-18-trixie@sha256:3f6d327ec3f8cdc4212789f0cfc95be81b723e51f869639d526de6236ecae874
         - name: wal2json
+          minVersion: "18.7"
+          image:
+            reference: ghcr.io/cloudnative-pg/wal2json:2.7-202611160937-18-trixie@sha256:0f3c609eb2238647c394eb1be5842d3ab039eb431d418249f20eae2ddac804db
+        - name: wal2json-pre-18-7
+          extension: wal2json
+          maxVersion: "18.7"
           image:
             reference: ghcr.io/cloudnative-pg/wal2json:2.6-202610110422-18-trixie@sha256:298e20b7e9a75553a7b0070237ff09af9122d5cae2689255c8203283aaf430d0
         - name: age
+          minVersion: "18.7"
+          sqlVersion: "1.8.0"
+          image:
+            reference: ghcr.io/solanicaio/age:1.8.0-202611161250-18-trixie@sha256:9ef552a94cb88b53fe0db2d6cd35a014562371532bb4c3ebb020c6757aae5b3a
+        - name: age-pre-18-7
+          extension: age
+          maxVersion: "18.7"
           sqlVersion: "1.8.0"
           image:
             reference: ghcr.io/solanicaio/age:1.8.0-202610141050-18-trixie@sha256:2fb13aed71690dc127fb8ecb0eb1145c2acf8d4fe8fe25467818f484570f3601
         - name: pg-cron
+          minVersion: "18.7"
+          sqlVersion: "1.6"
+          image:
+            reference: ghcr.io/solanicaio/pg-cron:1.6.8-202611161250-18-trixie@sha256:8c41e15a135dae0c9dd1ff08d675d598b365af859995cbf38b52ea8bcbf38b0a
+        - name: pg-cron-pre-18-7
+          extension: pg-cron
+          maxVersion: "18.7"
           sqlVersion: "1.6"
           image:
             reference: ghcr.io/solanicaio/pg-cron:1.6.8-202611071500-18-trixie@sha256:671b15442f7d492f1c855b37c3973d1366eccce1a8cd543990e6bdc8471944ca
         - name: pg-repack
+          minVersion: "18.7"
+          sqlVersion: "1.5.3"
+          image:
+            reference: ghcr.io/solanicaio/pg-repack:1.5.3-202611161250-18-trixie@sha256:7b73c30b4e321f2f8e58eeac81aa62b1a3dcc68bb84a070db5de483081da98de
+        - name: pg-repack-pre-18-7
+          extension: pg-repack
+          maxVersion: "18.7"
           sqlVersion: "1.5.3"
           image:
             reference: ghcr.io/solanicaio/pg-repack:1.5.3-202611071500-18-trixie@sha256:40c3ab6c3497e7db91211be9c63a2a66ecb4f4431ebc08acb72268cc5c861872

@@ -11,7 +11,7 @@
 
 componentTypes:
   postgresql:
-    defaultVersion: "18.6"
+    defaultVersion: "18.7"
     versions:
       - version: "14.23"
         image: ghcr.io/cloudnative-pg/postgresql:14.23-standard-trixie
@@ -25,6 +25,8 @@ componentTypes:
         image: ghcr.io/cloudnative-pg/postgresql:18.4-standard-trixie
       - version: "18.6"
         image: ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie
+      - version: "18.7"
+        image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
   # The CloudNativePG operator selects the PgBouncer image itself
   # (its default is ghcr.io/cloudnative-pg/pgbouncer). This provider does
   # not pin that image, so pgbouncer has no version catalog.
@@ -32,8 +34,11 @@ componentTypes:
 
 # Version bundles — curated engine versions exposed as spec.version on an Instance.
 # Top-level defaultVersion is used when spec.version is omitted.
-defaultVersion: "18.6"
+defaultVersion: "18.7"
 versions:
+  - name: "18.7"
+    components:
+      engine: "18.7"
   - name: "18.6"
     components:
       engine: "18.6"
