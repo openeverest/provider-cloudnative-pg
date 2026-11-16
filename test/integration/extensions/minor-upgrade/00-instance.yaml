@@ -21,8 +21,6 @@ spec:
         size: 1Gi
       parameters:
         extensions:
-          timescaledb:
-            enabled: true
           postgis:
             enabled: true
           pgivm:

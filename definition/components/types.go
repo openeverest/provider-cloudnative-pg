@@ -88,7 +88,7 @@ type ExtensionsSpec struct {
 	// the Timescale License (TSL) components such as compression and continuous
 	// aggregates. The TSL is not open source: it allows internal use but
 	// prohibits offering TimescaleDB to third parties as a database service.
-	// Requires PostgreSQL 18.6 (no 18.7 build yet); cannot be combined with timescaledb. Can only
+	// Requires PostgreSQL 18.6+; cannot be combined with timescaledb. Can only
 	// be enabled at creation; cannot be turned off.
 	TimescaleDBCommunity *ExtensionToggle `json:"timescaledbCommunity,omitempty"`
 

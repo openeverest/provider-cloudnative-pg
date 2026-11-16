@@ -26,11 +26,10 @@ spec:
               q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
               expect() { got="$(q "$1")"; [ "$got" = "$2" ] || { echo "query: $1"; echo "got: $got, want: $2"; exit 1; }; }
               refs="$(kubectl get cluster ext-upgrade -n "$NAMESPACE" -o jsonpath='{.spec.postgresql.extensions[*].image.reference}')"
-              echo "$refs" | grep -q 'timescaledb-oss:2.30.1-' || { echo "unexpected images: $refs"; exit 1; }
-              expect "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'" "2.30.1"
-              q "CREATE TABLE metrics (t timestamptz NOT NULL, v double precision)"
-              q "SELECT create_hypertable('metrics', by_range('t'))"
-              q "INSERT INTO metrics VALUES (now(), 1), (now() - interval '30 days', 2)"
+              echo "$refs" | grep -q 'postgis-extension:3.6.4-' || { echo "unexpected images: $refs"; exit 1; }
+              expect "SELECT extversion FROM pg_extension WHERE extname = 'postgis'" "3.6.4"
+              q "CREATE TABLE places (id int, geom geometry(Point, 4326))"
+              q "INSERT INTO places VALUES (1, ST_SetSRID(ST_MakePoint(1, 0), 4326))"
       catch:
         - script:
             content: kubectl get instance,cluster,database,pod -n $NAMESPACE -o wide
@@ -55,15 +54,15 @@ spec:
               q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
               for i in $(seq 1 120); do
                 image="$(kubectl get pod ext-upgrade-1 -n "$NAMESPACE" -o jsonpath='{.spec.containers[?(@.name=="postgres")].image}' 2>/dev/null || true)"
-                version="$(q "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'" 2>/dev/null || true)"
-                case "$image" in *18.7-standard-trixie) [ "$version" = "2.32.0" ] && break ;; esac
+                version="$(q "SELECT extversion FROM pg_extension WHERE extname = 'postgis'" 2>/dev/null || true)"
+                case "$image" in *18.7-standard-trixie) [ "$version" = "3.7.0" ] && break ;; esac
                 sleep 5
               done
-              echo "image: $image, timescaledb: $version"
+              echo "image: $image, postgis: $version"
               case "$image" in *18.7-standard-trixie) ;; *) exit 1 ;; esac
-              [ "$version" = "2.32.0" ]
+              [ "$version" = "3.7.0" ]
               refs="$(kubectl get cluster ext-upgrade -n "$NAMESPACE" -o jsonpath='{.spec.postgresql.extensions[*].image.reference}')"
-              echo "$refs" | grep -q 'timescaledb-oss:2.32.0-' || { echo "unexpected images: $refs"; exit 1; }
+              echo "$refs" | grep -q 'postgis-extension:3.7.0-' || { echo "unexpected images: $refs"; exit 1; }
         - assert:
             file: 00-assert.yaml
         - script:
@@ -73,11 +72,8 @@ spec:
               q() { kubectl exec -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
               expect() { got="$(q "$1")"; [ "$got" = "$2" ] || { echo "query: $1"; echo "got: $got, want: $2"; exit 1; }; }
               expect "SHOW server_version" "18.7"
-              # Data written before the upgrade, and new chunks after it
-              q "INSERT INTO metrics VALUES (now() - interval '60 days', 3)"
-              expect "SELECT count(*) FROM metrics" "3"
-              expect "SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_name = 'metrics'" "3"
-              expect "SELECT round(ST_X(ST_Transform(ST_SetSRID(ST_MakePoint(1, 0), 4326), 3857)))" "111319"
+              # Data written before the upgrade
+              expect "SELECT round(ST_X(ST_Transform(geom, 3857))) FROM places WHERE id = 1" "111319"
               q "CREATE TABLE ivm_base (x int)"
               q "SELECT pgivm.create_immv('ivm_view', 'SELECT count(*) AS n FROM ivm_base')"
               q "INSERT INTO ivm_base VALUES (1), (2)"

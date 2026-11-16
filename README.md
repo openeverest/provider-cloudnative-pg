@@ -146,9 +146,8 @@ columnstore compression, continuous aggregates, and compression, retention and r
 The TSL is **not** open source: use it only for internal use or if you hold a license from
 Timescale. It prohibits offering TimescaleDB to third parties as a database service. Enabling the
 toggle is your acceptance of the TSL; the provider itself remains Apache-2.0. Timescale builds
-these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later; there
-is no 18.7 build yet, so for now it runs on 18.6 only. The editions use different binaries, so an
-instance cannot switch between them.
+these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later. The
+editions use different binaries, so an instance cannot switch between them.
 
 #### pg_cron
 
