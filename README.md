@@ -146,8 +146,9 @@ columnstore compression, continuous aggregates, and compression, retention and r
 The TSL is **not** open source: use it only for internal use or if you hold a license from
 Timescale. It prohibits offering TimescaleDB to third parties as a database service. Enabling the
 toggle is your acceptance of the TSL; the provider itself remains Apache-2.0. Timescale builds
-these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later. The
-editions use different binaries, so an instance cannot switch between them.
+these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later; there
+is no 18.7 build yet, so for now it runs on 18.6 only. The editions use different binaries, so an
+instance cannot switch between them.
 
 #### pg_cron
 
@@ -349,7 +350,7 @@ metadata:
 spec:
   providerRef:
     name: provider-cloudnative-pg
-  version: "18.6"
+  version: "18.7"
   components:
     engine:
       type: postgresql
@@ -556,7 +557,8 @@ the Pooler also refuses unencrypted clients (`client_tls_sslmode=require`).
 
 | Version bundle | Default | postgresql |
 |---|---|---|
-| `18.6` | ✅ | `18.6` (`ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie`) |
+| `18.7` | ✅ | `18.7` (`ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie`) |
+| `18.6` | | `18.6` |
 | `18.4` | | `18.4` |
 | `17.10` | | `17.10` |
 | `16.14` | | `16.14` |

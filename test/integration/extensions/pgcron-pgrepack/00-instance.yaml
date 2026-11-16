@@ -5,7 +5,7 @@ metadata:
 spec:
   providerRef:
     name: provider-cloudnative-pg
-  version: "18.4"
+  version: "18.7"
   components:
     engine:
       type: postgresql

@@ -4,7 +4,7 @@ spec:
   componentTypes:
     pgbouncer: {}
     postgresql:
-      defaultVersion: "18.6"
+      defaultVersion: "18.7"
       versions:
         - image: ghcr.io/cloudnative-pg/postgresql:14.23-standard-trixie
           version: "14.23"
@@ -18,6 +18,8 @@ spec:
           version: "18.4"
         - image: ghcr.io/cloudnative-pg/postgresql:18.6-standard-trixie
           version: "18.6"
+        - image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+          version: "18.7"
   components:
     engine:
       parametersSchema:
@@ -1224,7 +1226,7 @@ spec:
               type: string
           type: object
       type: pgbouncer
-  defaultVersion: "18.6"
+  defaultVersion: "18.7"
   release:
     version: 0.3.4
   topologies:
@@ -1568,7 +1570,7 @@ spec:
             timescaledbCommunity:
               fieldParams:
                 defaultValue: false
-                helperText: 'TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. PostgreSQL 18.6+ only; preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0).'
+                helperText: 'TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. PostgreSQL 18.6 only until Timescale ships an 18.7 build; preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0).'
                 label: TimescaleDB Community (Timescale License)
                 modes:
                   edit:
@@ -1579,8 +1581,8 @@ spec:
               uiType: toggle
               validation:
                 celExpressions:
-                  - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) || (spec.version).matches("^18\\.([6-9]|[1-9][0-9]+)(\\.|$)")'
-                    message: TimescaleDB Community requires PostgreSQL 18.6 or later. Select a newer 18.x database version to enable it.
+                  - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) || (spec.version).matches("^18\\.6(\\.|$)")'
+                    message: TimescaleDB Community requires PostgreSQL 18.6 (there is no 18.7 build yet). Select version 18.6 to enable it.
                   - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled && has(spec.components.engine.parameters.extensions.timescaledb.enabled) && spec.components.engine.parameters.extensions.timescaledb.enabled)'
                     message: Enable either TimescaleDB (Apache-2.0) or TimescaleDB Community, not both.
             wal2json:
@@ -1965,6 +1967,9 @@ spec:
         - pooler
         - advanced
   versions:
+    - components:
+        engine: "18.7"
+      name: "18.7"
     - components:
         engine: "18.6"
       name: "18.6"
