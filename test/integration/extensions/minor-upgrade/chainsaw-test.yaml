@@ -83,8 +83,8 @@ spec:
               q "SELECT cron.unschedule('noop')"
               kubectl exec -i -n "$NAMESPACE" ext-upgrade-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAq <<'SQL'
               SET search_path = ag_catalog, "$user", public;
-              SELECT create_graph('g');
-              SELECT * FROM cypher('g', $$ CREATE (:N {name: 'a'}) $$) AS (v agtype);
+              SELECT create_graph('upgraded');
+              SELECT * FROM cypher('upgraded', $$ CREATE (:N {name: 'a'}) $$) AS (v agtype);
               SQL
       catch:
         - script:
