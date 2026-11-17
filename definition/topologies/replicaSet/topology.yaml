@@ -14,8 +14,6 @@ config:
     engine:
       defaults:
         replicas: 3
-    backupAgent:
-      optional: true
     proxy:
       optional: true
 ui:

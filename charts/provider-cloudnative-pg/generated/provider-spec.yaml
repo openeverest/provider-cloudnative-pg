@@ -1237,8 +1237,6 @@ spec:
   topologies:
     replicaSet:
       components:
-        backupAgent:
-          optional: true
         engine: {}
         proxy:
           optional: true
