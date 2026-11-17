@@ -98,18 +98,18 @@ helm-sync-rbac: yq ## Sync generated RBAC rules into the Helm chart.
 	@echo "Done."
 
 .PHONY: generate
-generate: manifests helm-sync-rbac ## Run all code generation (RBAC + Helm sync + provider spec from definition/).
+generate: manifests helm-sync-rbac ## Run all code generation (RBAC + Helm sync + provider spec and docs/reference.md from definition/).
 	go generate ./...
 	@echo "All generation complete."
 
 .PHONY: verify
 verify: ## Verify that generated files are up-to-date (for CI).
 	@$(MAKE) generate
-	@if git diff --quiet -- config/ definition/ $(CHART_DIR)/generated/; then \
+	@if git diff --quiet -- config/ definition/ $(CHART_DIR)/generated/ docs/ && [ -z "$$(git ls-files --others --exclude-standard -- docs/)" ]; then \
 		echo "Generated files are up-to-date."; \
 	else \
 		echo "ERROR: Generated files are out of date. Run 'make generate' and commit the changes."; \
-		git diff -- config/ definition/ $(CHART_DIR)/generated/; \
+		git diff -- config/ definition/ $(CHART_DIR)/generated/ docs/; \
 		exit 1; \
 	fi
 

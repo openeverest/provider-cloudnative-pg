@@ -32,8 +32,10 @@ spec:
           properties:
             affinity:
               description: |-
-                AffinityConfiguration contains the info we need to create the
-                affinity rules for Pods
+                Affinity is CNPG's scheduling configuration of the instance pods:
+                anti-affinity between instances, node selector, tolerations and
+                additional affinity rules. Cannot be combined with the engine's
+                schedulingPolicy affinity, nodeSelector or tolerations, which also set it.
               properties:
                 additionalPodAffinity:
                   description: AdditionalPodAffinity allows to specify pod affinity terms to be passed to all the cluster's pods.
@@ -980,12 +982,17 @@ spec:
                   type: string
               type: object
             bootstrap:
+              description: |-
+                Bootstrap sets how a new instance is initialized. Only read at
+                creation, and ignored when the Instance restores a backup
+                (spec.dataSource).
               properties:
                 initdb:
                   description: |-
-                    BootstrapInitDB is the configuration of the bootstrap process when
-                    initdb is used
-                    Refer to the Bootstrap page of the documentation for more information.
+                    InitDB is CNPG's initdb bootstrap: the application database and its
+                    owner (both CNPG's default, app, when unset; set both or neither), the
+                    Secret with the owner's password, locale and encoding, and SQL to run
+                    after initialization.
                   properties:
                     builtinLocale:
                       description: |-
@@ -1357,13 +1364,18 @@ spec:
                     database and owner.
                   properties:
                     name:
+                      description: Name of the VolumeSnapshot.
                       type: string
                   required:
                     - name
                   type: object
               type: object
             certificates:
-              description: CertificatesConfiguration contains the needed configurations to handle server certificates.
+              description: |-
+                Certificates are the TLS certificates of the instance (CNPG
+                certificates). Without them CNPG issues and rotates its own.
+                serverTLSSecret needs serverCASecret and cannot be combined with
+                serverAltDNSNames; replicationTLSSecret needs clientCASecret.
               properties:
                 clientCASecret:
                   description: |-
@@ -1419,6 +1431,9 @@ spec:
                     ag_catalog. Can only be enabled at creation; cannot be turned off.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1434,6 +1449,9 @@ spec:
                     until it is enabled. Turning it on or off restarts the instances.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1445,6 +1463,9 @@ spec:
                     set, so the provider defaults pgaudit.log to "ddl, role". Can be turned off.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1458,6 +1479,9 @@ spec:
                     enabled at creation; cannot be turned off.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1468,6 +1492,9 @@ spec:
                     application database. Cannot be turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1483,6 +1510,9 @@ spec:
                     turned off.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1495,6 +1525,9 @@ spec:
                     turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1505,6 +1538,9 @@ spec:
                     database. Requires postgis. Cannot be turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1516,6 +1552,9 @@ spec:
                     restart is needed. Cannot be turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1526,6 +1565,9 @@ spec:
                     database. Cannot be turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1536,6 +1578,9 @@ spec:
                     timescaledb in the application database. Cannot be turned off once enabled.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1550,6 +1595,9 @@ spec:
                     be enabled at creation; cannot be turned off.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1560,6 +1608,9 @@ spec:
                     available to replication slots. There is no CREATE EXTENSION.
                   properties:
                     enabled:
+                      description: |-
+                        Enabled turns the extension on. Whether it can be turned off again,
+                        or only enabled at creation, depends on the extension.
                       type: boolean
                   required:
                     - enabled
@@ -1567,8 +1618,10 @@ spec:
               type: object
             managed:
               description: |-
-                ManagedConfiguration represents the portions of PostgreSQL that are managed
-                by the instance manager
+                Managed is CNPG's declarative management of PostgreSQL roles
+                (managed.roles) and of the instance's Services (managed.services). The
+                Instance is Provisioning until CNPG has reconciled every role, and
+                Failed while one cannot be.
               properties:
                 roles:
                   description: Database roles managed by the `Cluster`
@@ -2104,8 +2157,12 @@ spec:
               type: object
             monitoring:
               description: |-
-                MonitoringConfiguration is the type containing all the monitoring
-                configuration for a certain cluster
+                Monitoring configures CNPG's metrics exporter on port 9187 of every
+                instance pod: custom queries, the default queries, TLS and relabeling.
+                The provider adds the queries of pg_stat_statements when that extension
+                is enabled. To have the Prometheus Operator scrape the instance, use
+                spec.topology.parameters.monitoring.prometheus instead of the deprecated
+                enablePodMonitor, which cannot be combined with it.
               properties:
                 customQueriesConfigMap:
                   description: The list of config maps containing the custom queries
@@ -2376,7 +2433,15 @@ spec:
                 Applied by CNPG with a configuration reload, no restart.
               type: string
             postgresql:
-              description: PostgresConfiguration defines the PostgreSQL configuration
+              description: |-
+                PostgreSQL is CNPG's PostgreSQL configuration: parameters
+                (postgresql.conf), pg_hba and pg_ident records, synchronous
+                replication, shared_preload_libraries, LDAP and more. CNPG manages a
+                fixed set of parameters itself and rejects them here. The provider adds
+                the records of requireTLS and pgHBA, the parameters and libraries of
+                enabled extensions and replication slot settings. pg_hba cannot be
+                combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
+                for parameters that need it.
               properties:
                 enableAlterSystem:
                   description: |-
@@ -2687,8 +2752,10 @@ spec:
               type: string
             pvcTemplate:
               description: |-
-                PersistentVolumeClaimSpec describes the common attributes of storage devices
-                and allows a Source for provider-specific attributes
+                PVCTemplate is the template of the data volumes' PersistentVolumeClaims
+                (CNPG storage.pvcTemplate), for settings the Instance doesn't have, such
+                as accessModes or volumeAttributesClassName. The engine's storage size
+                and storageClass take precedence over the template's.
               properties:
                 accessModes:
                   description: |-
@@ -2952,6 +3019,10 @@ spec:
                 connections. Applied by CNPG with a configuration reload, no restart.
               type: boolean
             resizeInUseVolumes:
+              description: |-
+                ResizeInUseVolumes lets CNPG grow the data volumes of running instances
+                when the engine's storage size increases; the StorageClass must allow
+                volume expansion. Unset keeps CNPG's default, true.
               type: boolean
             walStorage:
               description: |-
