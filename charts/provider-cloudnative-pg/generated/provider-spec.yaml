@@ -606,6 +606,11 @@ spec:
                     enabled:
                       type: boolean
                   type: object
+                pgpartman:
+                  properties:
+                    enabled:
+                      type: boolean
+                  type: object
                 pgrepack:
                   properties:
                     enabled:
@@ -1479,6 +1484,22 @@ spec:
                 celExpressions:
                   - celExpr: '!(has(spec.components.engine.parameters.extensions.pgivm.enabled) && spec.components.engine.parameters.extensions.pgivm.enabled) || (spec.version >= "18." && spec.version < "19.")'
                     message: pg_ivm requires PostgreSQL 18. Select a 18.x database version to enable it.
+            pgpartman:
+              fieldParams:
+                defaultValue: false
+                helperText: 'Partition management (partman.create_parent). A background worker runs partition maintenance in the application database as its owner, hourly by default. PostgreSQL 18.7+ only; preloaded: can only be enabled at creation and cannot be disabled.'
+                label: pg_partman
+                modes:
+                  edit:
+                    disabled: true
+                  restore:
+                    disabled: true
+              path: spec.components.engine.parameters.extensions.pgpartman.enabled
+              uiType: toggle
+              validation:
+                celExpressions:
+                  - celExpr: '!(has(spec.components.engine.parameters.extensions.pgpartman.enabled) && spec.components.engine.parameters.extensions.pgpartman.enabled) || (spec.version).matches("^18\\.([7-9]|[1-9][0-9]+)(\\.|$)")'
+                    message: pg_partman requires PostgreSQL 18.7 or later. Select a newer 18.x database version to enable it.
             pgrepack:
               fieldParams:
                 defaultValue: false
@@ -1612,6 +1633,7 @@ spec:
             - age
             - pgcron
             - pgrepack
+            - pgpartman
           description: Optional PostgreSQL extensions to install and enable on this instance.
           label: Extensions
         monitoring:

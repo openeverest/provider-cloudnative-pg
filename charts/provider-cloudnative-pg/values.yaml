@@ -122,12 +122,13 @@ extensionCatalog:
     # Trixie builds from the upstream catalog
     # image-catalogs-extensions/catalog-minimal-trixie.yaml in
     # https://github.com/cloudnative-pg/artifacts; AGE, TimescaleDB
-    # Community, pg_cron and pg_repack from
+    # Community, pg_cron, pg_repack and pg_partman from
     # https://github.com/solanicaio/postgresql-extensions.
     # PostgreSQL 18.7 changed the extension ABI: builds for 18.7 don't load
     # on older releases and older builds are unsafe on 18.7, so each
     # extension has a build per range (`*-pre-18-7` for older releases).
     # TimescaleDB keeps one entry until 18.7 builds are released.
+    # pg_partman only has a build for 18.7 and later.
     - major: 18
       image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
       extensions:
@@ -230,6 +231,11 @@ extensionCatalog:
           sqlVersion: "1.5.3"
           image:
             reference: ghcr.io/solanicaio/pg-repack:1.5.3-202611071500-18-trixie@sha256:40c3ab6c3497e7db91211be9c63a2a66ecb4f4431ebc08acb72268cc5c861872
+        - name: pg-partman
+          minVersion: "18.7"
+          sqlVersion: "5.5.0"
+          image:
+            reference: ghcr.io/solanicaio/pg-partman:5.5.0-18-trixie
 
 # -- Additional environment variables to set on the provider container
 extraEnv: []

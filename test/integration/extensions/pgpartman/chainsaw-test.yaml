@@ -1,0 +1,87 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# pg_partman, mounted as an image volume from the provider's extensions
+# catalog, on two instances so that the background worker is checked across a
+# switchover. Needs PostgreSQL 18.7 and Kubernetes ImageVolume (1.35+, or
+# 1.33/1.34 with the feature gate, and containerd 2.1+).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: extensions-pgpartman
+spec:
+  timeouts:
+    assert: 10m
+    cleanup: 3m
+  steps:
+    - name: create-instance
+      try:
+        - apply:
+            file: 00-instance.yaml
+        - assert:
+            file: 00-assert.yaml
+      catch:
+        - script:
+            content: kubectl get instance,cluster,database,pod -n $NAMESPACE -o wide
+        - script:
+            content: kubectl get instance/ext-partman -n $NAMESPACE -o yaml
+        - script:
+            content: kubectl get database/ext-partman-extensions -n $NAMESPACE -o yaml
+
+    - name: worker-premakes-partitions-as-owner
+      try:
+        - script:
+            timeout: 2m
+            content: |
+              set -e
+              primary="$(kubectl get cluster ext-partman -n "$NAMESPACE" -o jsonpath='{.status.currentPrimary}')"
+              # SET ROLE drops superuser rights, so the table is partitioned as app.
+              kubectl exec -i -n "$NAMESPACE" "$primary" -c postgres -- psql -v ON_ERROR_STOP=1 -d app -q <<'SQL'
+              SET ROLE app;
+              CREATE TABLE events (id bigint NOT NULL, payload text) PARTITION BY RANGE (id);
+              SELECT partman.create_parent(p_parent_table := 'public.events', p_control := 'id', p_interval := '10', p_premake := 2);
+              SQL
+              q() { kubectl exec -n "$NAMESPACE" "$primary" -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
+              partitions="SELECT count(*) FROM partman.show_partitions('public.events')"
+              before="$(q "$partitions")"
+              # Rows in the last premade partition make maintenance create more.
+              q "INSERT INTO events SELECT g FROM generate_series(0, 25) g"
+              for i in $(seq 1 60); do
+                [ "$(q "$partitions")" -gt "$before" ] && break
+                sleep 1
+              done
+              [ "$(q "$partitions")" -gt "$before" ] || { echo "no partitions premade: still $before"; exit 1; }
+              [ "$(q "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'events\_p%' AND tableowner <> 'app'")" = "0" ]
+
+    - name: maintenance-resumes-after-switchover
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -e
+              old="$(kubectl get cluster ext-partman -n "$NAMESPACE" -o jsonpath='{.status.currentPrimary}')"
+              new="$(kubectl get pod -n "$NAMESPACE" -l cnpg.io/cluster=ext-partman,cnpg.io/instanceRole=replica -o jsonpath='{.items[0].metadata.name}')"
+              # What "kubectl cnpg promote" does
+              kubectl patch cluster ext-partman -n "$NAMESPACE" --subresource=status --type=merge \
+                -p "{\"status\":{\"targetPrimary\":\"$new\"}}"
+              for i in $(seq 1 120); do
+                [ "$(kubectl get cluster ext-partman -n "$NAMESPACE" -o jsonpath='{.status.currentPrimary}')" = "$new" ] && break
+                sleep 2
+              done
+              [ "$(kubectl get cluster ext-partman -n "$NAMESPACE" -o jsonpath='{.status.currentPrimary}')" = "$new" ]
+              q() { kubectl exec -n "$NAMESPACE" "$new" -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc "$1"; }
+              for i in $(seq 1 120); do
+                [ "$(q "SELECT pg_is_in_recovery()" 2>/dev/null)" = "f" ] && break
+                sleep 1
+              done
+              partitions="SELECT count(*) FROM partman.show_partitions('public.events')"
+              before="$(q "$partitions")"
+              # The old primary is demoted, so partitions for these rows come from the new one.
+              q "INSERT INTO events SELECT g FROM generate_series(26, 45) g"
+              for i in $(seq 1 90); do
+                [ "$(q "$partitions")" -gt "$before" ] && break
+                sleep 1
+              done
+              [ "$(q "$partitions")" -gt "$before" ] || { echo "no partitions premade on the new primary $new: still $before"; exit 1; }
+              echo "pg_partman maintenance moved from $old to $new"
+      catch:
+        - script:
+            content: kubectl get cluster/ext-partman -n $NAMESPACE -o yaml
