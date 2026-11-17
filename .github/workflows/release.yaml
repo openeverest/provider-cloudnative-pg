@@ -250,21 +250,42 @@ jobs:
         run: |
           tag="v${VERSION}"
           title="v${VERSION}"
-          notes="Release v${VERSION}"
+          image="${IMAGE_PREFIX}/${PROVIDER_IMAGE_NAME}"
           prerelease_args=()
           if [[ "${IS_RC}" == "true" ]]; then
             prerelease_args+=(--prerelease)
-            notes="Pre-release v${VERSION}"
+            image="${IMAGE_PREFIX}/${PROVIDER_DEV_IMAGE_NAME}"
           fi
+
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes_file" <<EOF
+          ## provider-cloudnative-pg v${VERSION}
+
+          ### Image
+          \`\`\`
+          ${image}:${VERSION}
+          \`\`\`
+          Platforms: \`linux/amd64\`, \`linux/arm64\`
+
+          ### Install with Helm
+          \`\`\`bash
+          helm install provider-cloudnative-pg \\
+            oci://${IMAGE_PREFIX}/charts/provider-cloudnative-pg \\
+            --version ${VERSION} \\
+            --namespace everest-system
+          \`\`\`
+          EOF
 
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; skipping create"
           else
             # Draft first so assets are attached before immutability locks the release.
+            # The install notes above are prepended to GitHub's generated "What's Changed" list.
             gh release create "$tag" "${{ steps.package.outputs.tgz }}" \
               --verify-tag \
               --title "$title" \
-              --notes "$notes" \
+              --notes-file "$notes_file" \
+              --generate-notes \
               --draft \
               "${prerelease_args[@]}"
             gh release edit "$tag" --draft=false
