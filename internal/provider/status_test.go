@@ -12,6 +12,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+func TestStatusPendingWhenClusterMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := cnpgv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &corev1alpha1.Instance{ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	c := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+
+	got, err := (&Provider{}).Status(c)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.Phase != corev1alpha1.InstancePhasePending {
+		t.Fatalf("phase = %q, want Pending", got.Phase)
+	}
+	if got.Message != "Waiting to get CloudNativePG cluster resource" {
+		t.Fatalf("message = %q", got.Message)
+	}
+}
+
 func TestStatusMapsTerminalClusterPhasesToFailed(t *testing.T) {
 	const reason = "needs manual intervention"
 

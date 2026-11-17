@@ -117,6 +117,63 @@ func TestValidateEngineCPU(t *testing.T) {
 	}
 }
 
+func TestValidateCertificates(t *testing.T) {
+	tests := []struct {
+		name    string
+		certs   *cnpgv1.CertificatesConfiguration
+		wantErr string
+	}{
+		{name: "empty", certs: &cnpgv1.CertificatesConfiguration{}},
+		{
+			name: "server TLS with CA",
+			certs: &cnpgv1.CertificatesConfiguration{
+				ServerTLSSecret: "server-tls",
+				ServerCASecret:  "server-ca",
+			},
+		},
+		{
+			name:    "server TLS without CA",
+			certs:   &cnpgv1.CertificatesConfiguration{ServerTLSSecret: "server-tls"},
+			wantErr: "server CA secret is required",
+		},
+		{
+			name: "server TLS with alt DNS names",
+			certs: &cnpgv1.CertificatesConfiguration{
+				ServerTLSSecret:   "server-tls",
+				ServerCASecret:    "server-ca",
+				ServerAltDNSNames: []string{"db.example.com"},
+			},
+			wantErr: "server alternative DNS names cannot be specified",
+		},
+		{
+			name:    "replication TLS without client CA",
+			certs:   &cnpgv1.CertificatesConfiguration{ReplicationTLSSecret: "repl-tls"},
+			wantErr: "client CA secret is required",
+		},
+		{
+			name: "replication TLS with client CA",
+			certs: &cnpgv1.CertificatesConfiguration{
+				ReplicationTLSSecret: "repl-tls",
+				ClientCASecret:       "client-ca",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCertificates(tt.certs)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateBootstrap(t *testing.T) {
 	tests := []struct {
 		name    string
