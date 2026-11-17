@@ -1,10 +1,15 @@
+---
+# Releases the provider when a version tag is pushed.
+#
+#   - Tag vX.Y.Z          -> provider-cloudnative-pg:X.Y.Z and :latest, chart X.Y.Z, GitHub release
+#   - Tag vX.Y.Z-<suffix> -> provider-cloudnative-pg-dev:X.Y.Z-<suffix>, chart, GitHub pre-release
+#
+# The chart and the GitHub release are published only once the image exists.
 name: Provider CloudNativePG Release
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "The version to release, e.g. X.Y.Z for a release or X.Y.Z-<suffix> (e.g. X.Y.Z-rc1, X.Y.Z-dev) for a dev build"
-        required: true
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -24,14 +29,25 @@ jobs:
       contents: read
     outputs:
       image_prefix: ${{ steps.vars.outputs.image_prefix }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Resolve version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9][a-zA-Z0-9.-]*)?$ ]]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' is not a valid version. Use vX.Y.Z for a release or vX.Y.Z-<suffix> (e.g. vX.Y.Z-rc1, vX.Y.Z-dev) for a dev build"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Require repository admin
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           permission="$(gh api "repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" --jq .permission)"
           if [[ "$permission" != "admin" ]]; then
-            echo "::error::Only repository admins can run this release workflow (actor=${{ github.actor }}, permission=${permission})"
+            echo "::error::Only repository admins can release by pushing a version tag (actor=${{ github.actor }}, permission=${permission})"
             exit 1
           fi
 
@@ -64,16 +80,9 @@ jobs:
       attestations: write
     env:
       IMAGE_PREFIX: ${{ needs.authorize.outputs.image_prefix }}
-      VERSION: ${{ github.event.inputs.version }}
-      IS_RC: ${{ contains(github.event.inputs.version, '-') }}
+      VERSION: ${{ needs.authorize.outputs.version }}
+      IS_RC: ${{ contains(needs.authorize.outputs.version, '-') }}
     steps:
-      - name: Validate input
-        run: |
-          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9][a-zA-Z0-9.-]*)?$ ]]; then
-            echo "Wrong version format provided, please use \"X.Y.Z\" for a release or \"X.Y.Z-<suffix>\" (e.g. X.Y.Z-rc1, X.Y.Z-dev) for a dev build"
-            exit 1
-          fi
-
       - name: Login to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -135,8 +144,8 @@ jobs:
       packages: write
     env:
       IMAGE_PREFIX: ${{ needs.authorize.outputs.image_prefix }}
-      VERSION: ${{ github.event.inputs.version }}
-      IS_RC: ${{ contains(github.event.inputs.version, '-') }}
+      VERSION: ${{ needs.authorize.outputs.version }}
+      IS_RC: ${{ contains(needs.authorize.outputs.version, '-') }}
     steps:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -177,8 +186,8 @@ jobs:
       packages: write
     env:
       IMAGE_PREFIX: ${{ needs.authorize.outputs.image_prefix }}
-      VERSION: ${{ github.event.inputs.version }}
-      IS_RC: ${{ contains(github.event.inputs.version, '-') }}
+      VERSION: ${{ needs.authorize.outputs.version }}
+      IS_RC: ${{ contains(needs.authorize.outputs.version, '-') }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
@@ -253,7 +262,7 @@ jobs:
           else
             # Draft first so assets are attached before immutability locks the release.
             gh release create "$tag" "${{ steps.package.outputs.tgz }}" \
-              --target "${{ github.sha }}" \
+              --verify-tag \
               --title "$title" \
               --notes "$notes" \
               --draft \
