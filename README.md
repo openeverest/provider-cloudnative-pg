@@ -542,7 +542,7 @@ spec:
 |---|---|---|
 | `replicaSet` | ✅ | A CloudNativePG primary + standby cluster built from the `engine` component (default 3 instances) |
 
-The `backupAgent` and `proxy` components are optional. Prometheus scraping is a topology
+The `proxy` component is optional. Prometheus scraping is a topology
 parameter (`spec.topology.parameters.monitoring.prometheus`), not a component.
 
 ### Connection pooling
