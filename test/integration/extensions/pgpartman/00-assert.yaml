@@ -1,0 +1,35 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: ext-partman
+status:
+  phase: Ready
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ext-partman
+spec:
+  postgresql:
+    shared_preload_libraries:
+      - pg_partman_bgw
+    parameters:
+      pg_partman_bgw.dbname: app
+      pg_partman_bgw.role: app
+      pg_partman_bgw.interval: "5"
+status:
+  readyInstances: 2
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: ext-partman-extensions
+spec:
+  name: app
+  cluster:
+    name: ext-partman
+  extensions:
+    - name: pg_partman
+      schema: partman
+status:
+  applied: true

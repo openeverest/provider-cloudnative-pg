@@ -84,7 +84,7 @@ ImageVolume (1.35+, or 1.33/1.34 + feature gate), and adding one restarts the in
 
 The image-volume images come from a CloudNativePG `ClusterImageCatalog` that the chart renders
 from `extensionCatalog` in its values (default: the official CloudNativePG trixie builds plus
-AGE, TimescaleDB Community, pg_cron and pg_repack from solanicaio/postgresql-extensions). The provider copies the
+AGE, TimescaleDB Community, pg_cron, pg_repack and pg_partman from solanicaio/postgresql-extensions). The provider copies the
 catalog entry of each enabled extension (image,
 paths, env) into the Cluster and passes the `sqlVersion` value to `CREATE EXTENSION`, so admins
 can bump or mirror images with `helm upgrade`, or set `extensionCatalog.create=false` and point
@@ -127,6 +127,7 @@ annotations.
 | Apache AGE | `age` | ✅ | ❌ creation only ² | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded. Run `SET search_path = ag_catalog, "$user", public` before using it |
 | pg_cron | `pgcron` | ✅ | ❌ creation only ¹ ² | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded. See [pg_cron](#pg_cron) |
 | pg_repack | `pgrepack` | ✅ | ✅ restarts | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions). See [pg_repack](#pg_repack) |
+| pg_partman | `pgpartman` | ✅ | ❌ creation only ¹ ² | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), background worker preloaded; PostgreSQL **18.7+**. See [pg_partman](#pg_partman) |
 
 Extensions that are created in the database (everything but pgAudit and wal2json) cannot be
 disabled: dropping them would fail or destroy data, so the provider rejects it.
@@ -139,6 +140,8 @@ that.
 (pg_cron) through default privileges set in `postInitApplicationSQL`, which only runs at
 bootstrap. Default privileges on schemas cannot be limited to one schema, so the owner also gets
 `USAGE` on any other schema the `postgres` superuser creates later in the application database.
+For pg_partman the same step creates the `partman` schema and limits the owner's privileges to
+it.
 
 ³ TimescaleDB Community adds the features licensed under the
 [Timescale License (TSL)](https://github.com/timescale/timescaledb/blob/main/tsl/LICENSE-TIMESCALE):
@@ -168,6 +171,42 @@ are rows in the database, not part of the Instance spec, so they are replicated,
 and resume on the new primary after a switchover or failover. Each running job uses a background
 worker, shared with parallel queries and logical replication through `max_worker_processes`
 (default 8). Raise it in `postgresql.parameters` if many jobs run at once.
+
+#### pg_partman
+
+pg_partman creates and drops the partitions of natively partitioned tables. The provider creates
+the extension in the `partman` schema of the application database and gives the application
+owner what pg_partman needs from a non-superuser: `ALL` on that schema, where it keeps a template
+table for each partition set, and on its configuration tables. The owner partitions its tables:
+
+```sql
+CREATE TABLE events (id bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now())
+  PARTITION BY RANGE (created_at);
+SELECT partman.create_parent(
+  p_parent_table := 'public.events',
+  p_control := 'created_at',
+  p_interval := '1 day'
+);
+SELECT * FROM partman.show_partitions('public.events');
+```
+
+The provider preloads the pg_partman background worker and sets `pg_partman_bgw.dbname` to the
+application database and `pg_partman_bgw.role` to its owner, so maintenance (premaking
+partitions, applying retention) runs there as the owner every `pg_partman_bgw.interval` seconds
+(default `3600`; change it in `postgresql.parameters`). Setting `pg_partman_bgw.dbname` to another
+database is rejected. The worker can only maintain tables its role owns: to partition tables of
+other roles, grant those roles to the owner, or set `pg_partman_bgw.role` to a role that is a
+member of them and has the same privileges on the `partman` schema. The worker runs only on the
+primary. The partition configuration is rows in the database, so it is replicated, kept in
+backups, and maintenance resumes on the new primary after a switchover or failover.
+
+The image is built for PostgreSQL 18.7 and later; on an older release the toggle is a validation
+error. The Python scripts of the upstream package are not included.
+
+On PostgreSQL 18.7 every worker run logs `ERROR: cannot drop portal "<unnamed portal 1>" while it
+is being set up`, followed by `background worker "pg_partman background worker" exited with exit
+code 1`. Maintenance is committed before the error, so it still takes effect. pg_partman 5.5.0
+drops a portal it never started, which PostgreSQL 18.7 rejects.
 
 #### pg_repack
 
@@ -890,7 +929,7 @@ code generation, and the backup/restore interfaces are documented once for all p
 | `definition/` | Provider identity, component types, versions, topologies, backup classes |
 | `charts/provider-cloudnative-pg/` | Helm chart (`generated/` is produced by `make generate`) |
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
-| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `backup`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `tls-only`, `wal-storage` |
+| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `backup`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `tls-only`, `wal-storage` |
 | `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup-restore`, `backup-deletion` |
 | `test/testdata/` | Fixtures shared by the suites (S3Mock object store) |
 | `test/e2e/` | Playwright UI tests against the OpenEverest UI |
@@ -906,8 +945,9 @@ code generation, and the backup/restore interfaces are documented once for all p
   Individual suites are also exposed as make targets (`make test-integration-core`,
   `make test-integration-backup`, `make test-integration-core-replicaset`, `make test-integration-extensions`, …).
   The extension suites run a one-instance PostgreSQL and use each extension through `psql`;
-  `extensions/pgcron-pgrepack` runs two instances to check that pg_cron jobs resume after a
-  switchover. `extensions/imagevolume` and `extensions/pgcron-pgrepack` need Kubernetes
+  `extensions/pgcron-pgrepack` and `extensions/pgpartman` run two instances to check that pg_cron
+  jobs and pg_partman maintenance resume after a switchover. `extensions/imagevolume`,
+  `extensions/pgcron-pgrepack` and `extensions/pgpartman` need Kubernetes
   ImageVolume (1.35+ with containerd 2.1+); the dev
   and CI k3d cluster ([dev/k3d_config.yaml](dev/k3d_config.yaml)) runs k3s 1.36, so
   `make test-integration` covers them (alone: `make test-integration-imagevolume`).

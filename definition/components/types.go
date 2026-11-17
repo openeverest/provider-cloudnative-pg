@@ -144,6 +144,15 @@ type ExtensionsSpec struct {
 	// /extensions/pg-repack/bin/pg_repack and runs as the superuser. Cannot be
 	// turned off once enabled.
 	PgRepack *ExtensionToggle `json:"pgrepack,omitempty"`
+
+	// PgPartman (image volume) preloads the pg_partman background worker, runs
+	// CREATE EXTENSION pg_partman in the partman schema of the application
+	// database and grants its owner the privileges to manage partitions. The
+	// worker runs maintenance for that database as the owner
+	// (pg_partman_bgw.dbname and pg_partman_bgw.role), on the primary only.
+	// Requires PostgreSQL 18.7+. Can only be enabled at creation; cannot be
+	// turned off.
+	PgPartman *ExtensionToggle `json:"pgpartman,omitempty"`
 }
 
 // ExtensionToggle switches a first-class extension on.

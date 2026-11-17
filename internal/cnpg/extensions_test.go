@@ -100,6 +100,11 @@ func TestValidateExtensions(t *testing.T) {
 		{name: "pg_cron in the custom application database", custom: withCronDatabase(withBootstrapDatabase(withExtensions(components.ExtensionsSpec{PgCron: on}), "jobs"), "jobs"), engineVersion: "18.4"},
 		{name: "pg_cron in another database", custom: withCronDatabase(withExtensions(components.ExtensionsSpec{PgCron: on}), "postgres"), engineVersion: "18.4", wantErr: true},
 		{name: "cron.database_name without pg_cron", custom: withCronDatabase(withExtensions(components.ExtensionsSpec{PgVector: on}), "postgres"), engineVersion: "18.4"},
+		{name: "pg_partman on PG 18", custom: withExtensions(components.ExtensionsSpec{PgPartman: on}), engineVersion: "18.7"},
+		{name: "pg_partman on PG 17", custom: withExtensions(components.ExtensionsSpec{PgPartman: on}), engineVersion: "17.6", wantErr: true},
+		{name: "pg_partman worker in the application database", custom: withParameters(withExtensions(components.ExtensionsSpec{PgPartman: on}), map[string]string{"pg_partman_bgw.dbname": "app"}), engineVersion: "18.7"},
+		{name: "pg_partman worker in another database", custom: withParameters(withExtensions(components.ExtensionsSpec{PgPartman: on}), map[string]string{"pg_partman_bgw.dbname": "app,postgres"}), engineVersion: "18.7", wantErr: true},
+		{name: "pg_partman worker as another role", custom: withParameters(withExtensions(components.ExtensionsSpec{PgPartman: on}), map[string]string{"pg_partman_bgw.role": "maintainer"}), engineVersion: "18.7"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -290,6 +295,51 @@ func TestApplyExtensionsPgCron(t *testing.T) {
 	}
 }
 
+func TestApplyExtensionsPgPartman(t *testing.T) {
+	images := ExtensionImages{"pg-partman": {Config: cnpgv1.ExtensionConfiguration{Name: "pg-partman"}, SQLVersion: "5.5.0"}}
+	custom := withBootstrapDatabase(withExtensions(components.ExtensionsSpec{PgPartman: on}), "events")
+	pg := &cnpgv1.Cluster{}
+	ApplyExtensions(pg, custom, images)
+	ApplyExtensions(pg, custom, images)
+	cfg := pg.Spec.PostgresConfiguration
+	if len(cfg.Extensions) != 1 || cfg.Extensions[0].Name != "pg-partman" {
+		t.Errorf("extensions = %+v, want pg-partman once", cfg.Extensions)
+	}
+	if want := []string{"pg_partman_bgw"}; !slices.Equal(cfg.AdditionalLibraries, want) {
+		t.Errorf("shared_preload_libraries = %v, want %v", cfg.AdditionalLibraries, want)
+	}
+	for name, want := range map[string]string{
+		"pg_partman_bgw.dbname": "events",
+		"pg_partman_bgw.role":   "events",
+	} {
+		if got := cfg.Parameters[name]; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	wantSQL := []string{
+		"CREATE SCHEMA partman",
+		`GRANT ALL ON SCHEMA partman TO "events"`,
+		`ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA partman GRANT ALL ON TABLES TO "events"`,
+	}
+	if got := pg.Spec.Bootstrap.InitDB.PostInitApplicationSQL; !slices.Equal(got, wantSQL) {
+		t.Errorf("postInitApplicationSQL = %q, want %q", got, wantSQL)
+	}
+
+	db := BuildExtensionsDatabase("my-pg", custom, images)
+	want := cnpgv1.ExtensionSpec{DatabaseObjectSpec: cnpgv1.DatabaseObjectSpec{Name: "pg_partman", Ensure: cnpgv1.EnsurePresent}, Version: "5.5.0", Schema: "partman"}
+	if len(db.Spec.Extensions) != 1 || db.Spec.Extensions[0] != want {
+		t.Errorf("Database extensions = %+v, want %+v", db.Spec.Extensions, want)
+	}
+
+	userSet := withParameters(withExtensions(components.ExtensionsSpec{PgPartman: on}), map[string]string{"pg_partman_bgw.role": "maintainer"})
+	pg = &cnpgv1.Cluster{}
+	pg.Spec.PostgresConfiguration.Parameters = map[string]string{"pg_partman_bgw.role": "maintainer"}
+	ApplyExtensions(pg, userSet, images)
+	if got := pg.Spec.PostgresConfiguration.Parameters["pg_partman_bgw.role"]; got != "maintainer" {
+		t.Errorf("pg_partman_bgw.role = %q, want the user's maintainer", got)
+	}
+}
+
 func TestApplyExtensionsPgRepack(t *testing.T) {
 	images := ExtensionImages{"pg-repack": {Config: cnpgv1.ExtensionConfiguration{Name: "pg-repack"}, SQLVersion: "1.5.3"}}
 	custom := withExtensions(components.ExtensionsSpec{PgRepack: on})
@@ -339,6 +389,8 @@ func TestValidateExtensionsAtCreation(t *testing.T) {
 		{name: "pg_cron enabled on an existing instance", custom: withExtensions(components.ExtensionsSpec{PgCron: on}), cluster: clusterWith(), wantReject: true},
 		{name: "created with pg_cron", custom: withExtensions(components.ExtensionsSpec{PgCron: on}), cluster: clusterWith("pg-cron")},
 		{name: "pg_repack enabled on an existing instance", custom: withExtensions(components.ExtensionsSpec{PgRepack: on}), cluster: clusterWith()},
+		{name: "pg_partman enabled on an existing instance", custom: withExtensions(components.ExtensionsSpec{PgPartman: on}), cluster: clusterWith(), wantReject: true},
+		{name: "created with pg_partman", custom: withExtensions(components.ExtensionsSpec{PgPartman: on}), cluster: clusterWith("pg-partman")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

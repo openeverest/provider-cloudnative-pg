@@ -54,6 +54,9 @@ type extension struct {
 	// timescaledb); empty when there is no CREATE EXTENSION or the operator
 	// manages it.
 	sqlExtension string
+	// sqlSchema is the schema the extension is created in; empty for the
+	// extension's own or the default schema.
+	sqlSchema string
 	// minPostgresVersion is the oldest PostgreSQL release (major.minor) the
 	// extension image runs on, when its binaries need a newer minor than the
 	// image-volume major alone guarantees.
@@ -64,14 +67,18 @@ type extension struct {
 	// databaseParameters name parameters that must hold the application
 	// database name; they default to it and other values are rejected.
 	databaseParameters []string
-	requires           []string
+	// ownerParameters name parameters that default to the application
+	// database owner.
+	ownerParameters []string
+	requires        []string
 	// conflicts lists extensions that cannot be enabled together with this
 	// one, such as the two TimescaleDB editions, which create the same SQL
 	// extension from different images.
 	conflicts []string
-	// bootstrapSQL runs as the superuser in the application database at initdb,
-	// so such extensions can only be enabled when the instance is created.
-	bootstrapSQL func(owner string) string
+	// bootstrapSQL statements run as the superuser in the application database
+	// at initdb, so such extensions can only be enabled when the instance is
+	// created.
+	bootstrapSQL func(owner string) []string
 }
 
 // Ordered so that dependencies are created first (postgis before pgrouting).
@@ -181,15 +188,46 @@ var firstClassExtensions = []extension{
 		catalogEntry: "pg-repack",
 		sqlExtension: "pg_repack",
 	},
+	{
+		field:        "pgpartman",
+		toggle:       func(e *components.ExtensionsSpec) *components.ExtensionToggle { return e.PgPartman },
+		catalogEntry: "pg-partman",
+		sqlExtension: "pg_partman",
+		sqlSchema:    partmanSchema,
+		// The background worker that runs partition maintenance.
+		preloadLibraries: []string{"pg_partman_bgw"},
+		// It only maintains the databases named here.
+		databaseParameters: []string{"pg_partman_bgw.dbname"},
+		// Its default role (partman_maintainer) does not exist. As the owner it
+		// needs no superuser, and the partitions it creates belong to the owner.
+		ownerParameters: []string{"pg_partman_bgw.role"},
+		bootstrapSQL:    grantOwnerPartman,
+	},
 }
+
+// partmanSchema is the schema pg_partman is created in, as upstream recommends.
+const partmanSchema = "partman"
 
 // grantOwnerUsageOnSuperuserSchemas lets the owner use the schemas that CREATE
 // EXTENSION later creates as the superuser (ag_catalog, cron). Default
 // privileges on schemas cannot be narrowed to one schema, so this covers every
 // schema the superuser creates in the application database. It runs only at
 // initdb: changing it does not reach existing clusters.
-func grantOwnerUsageOnSuperuserSchemas(owner string) string {
-	return "ALTER DEFAULT PRIVILEGES FOR ROLE " + postgresSuperuser + " GRANT USAGE ON SCHEMAS TO " + quoteIdentifier(owner)
+func grantOwnerUsageOnSuperuserSchemas(owner string) []string {
+	return []string{"ALTER DEFAULT PRIVILEGES FOR ROLE " + postgresSuperuser + " GRANT USAGE ON SCHEMAS TO " + quoteIdentifier(owner)}
+}
+
+// grantOwnerPartman gives the owner what pg_partman needs from a non-superuser:
+// CREATE on its schema, where it keeps a template table per partition set, and
+// write access to its configuration tables, which CREATE EXTENSION later
+// creates as the superuser. pg_partman accepts a pre-created schema, so the
+// default privileges are limited to it.
+func grantOwnerPartman(owner string) []string {
+	return []string{
+		"CREATE SCHEMA " + partmanSchema,
+		"GRANT ALL ON SCHEMA " + partmanSchema + " TO " + quoteIdentifier(owner),
+		"ALTER DEFAULT PRIVILEGES FOR ROLE " + postgresSuperuser + " IN SCHEMA " + partmanSchema + " GRANT ALL ON TABLES TO " + quoteIdentifier(owner),
+	}
 }
 
 func (e extension) enabled(custom *components.CNPGCustomSpec) bool {
@@ -403,7 +441,7 @@ func ApplyExtensions(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec, imag
 			}
 		}
 
-		if (len(ext.defaultParameters) > 0 || len(ext.databaseParameters) > 0) && cfg.Parameters == nil {
+		if (len(ext.defaultParameters) > 0 || len(ext.databaseParameters) > 0 || len(ext.ownerParameters) > 0) && cfg.Parameters == nil {
 			cfg.Parameters = map[string]string{}
 		}
 		for name, value := range ext.defaultParameters {
@@ -416,10 +454,14 @@ func ApplyExtensions(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec, imag
 				cfg.Parameters[name], _ = applicationDatabaseIdentity(custom)
 			}
 		}
+		for _, name := range ext.ownerParameters {
+			if _, set := cfg.Parameters[name]; !set {
+				_, cfg.Parameters[name] = applicationDatabaseIdentity(custom)
+			}
+		}
 
 		if ext.bootstrapSQL != nil {
 			_, owner := applicationDatabaseIdentity(custom)
-			statement := ext.bootstrapSQL(owner)
 			if pg.Spec.Bootstrap == nil {
 				pg.Spec.Bootstrap = &cnpgv1.BootstrapConfiguration{}
 			}
@@ -428,8 +470,10 @@ func ApplyExtensions(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec, imag
 			if pg.Spec.Bootstrap.InitDB != nil {
 				initDB = pg.Spec.Bootstrap.InitDB.DeepCopy()
 			}
-			if !slices.Contains(initDB.PostInitApplicationSQL, statement) {
-				initDB.PostInitApplicationSQL = append(initDB.PostInitApplicationSQL, statement)
+			for _, statement := range ext.bootstrapSQL(owner) {
+				if !slices.Contains(initDB.PostInitApplicationSQL, statement) {
+					initDB.PostInitApplicationSQL = append(initDB.PostInitApplicationSQL, statement)
+				}
 			}
 			pg.Spec.Bootstrap.InitDB = initDB
 		}
@@ -496,6 +540,7 @@ func BuildExtensionsDatabase(clusterName string, custom *components.CNPGCustomSp
 			},
 			// Empty installs the default version of the extension's control file.
 			Version: images[ext.catalogEntry].SQLVersion,
+			Schema:  ext.sqlSchema,
 		})
 	}
 
