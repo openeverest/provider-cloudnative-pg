@@ -235,7 +235,7 @@ extensionCatalog:
           minVersion: "18.7"
           sqlVersion: "5.5.0"
           image:
-            reference: ghcr.io/solanicaio/pg-partman:5.5.0-18-trixie
+            reference: ghcr.io/solanicaio/pg-partman:5.5.0-202611171122-18-trixie@sha256:aec9d402493fb6cd0cbb21e5ef4db3ae9ada6862a49c49b9d2fb0fbf4720aa80
 
 # -- Additional environment variables to set on the provider container
 extraEnv: []
