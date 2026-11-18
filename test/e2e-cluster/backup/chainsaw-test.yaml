@@ -4,7 +4,21 @@ kind: Test
 metadata:
   name: backup
 spec:
+  description: |
+    Scheduled and on-demand backups on the full OpenEverest platform: core
+    accepts the BackupClass and the BackupStorage, the provider renders the
+    Instance's ObjectStore under its own path, and deleting a Backup deletes
+    its data.
   steps:
+    - name: platform-ready
+      try:
+        - script:
+            content: |
+              set -e
+              kubectl wait --for=condition=Available -n everest-system deploy --all --timeout=60s
+              kubectl wait --for=condition=Available -n provider-system deploy/provider-cloudnative-pg deploy/cnpg-operator --timeout=60s
+              kubectl wait --for=condition=Accepted backupclass/cnpg-barman-plugin --timeout=60s
+
     - name: start-s3mock
       try:
         - apply:
@@ -66,7 +80,11 @@ spec:
             timeout: 60s
             content: |
               set -eu
-              kubectl wait --for=jsonpath='{.spec.retentionPolicy}'=30d objectstore/s3mock-s3 -n "$NAMESPACE" --timeout=30s
+              store="objectstore -l backup.openeverest.io/storage=s3mock-s3,app.kubernetes.io/instance=backup-test"
+              kubectl wait --for=jsonpath='{.spec.retentionPolicy}'=30d $store -n "$NAMESPACE" --timeout=30s
+              # The Instance archives under its own path in the storage.
+              uid="$(kubectl get instance/backup-test -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+              kubectl wait --for=jsonpath='{.spec.configuration.destinationPath}'="s3://backups/backups/$NAMESPACE/backup-test/$uid/s3mock-s3/" $store -n "$NAMESPACE" --timeout=30s
               deletion_jobs="$(kubectl get jobs -n "$NAMESPACE" -l backup.openeverest.io/schedule-name=integration-retention -o name)"
               if [ -n "$deletion_jobs" ]; then
                 echo "unexpected provider-managed retention deletion Jobs: $deletion_jobs"
@@ -76,7 +94,7 @@ spec:
         - script:
             content: kubectl get backup,cluster,scheduledbackup,job,pod -n "$NAMESPACE" -o wide
         - script:
-            content: kubectl get objectstore/s3mock-s3 -n "$NAMESPACE" -o yaml
+            content: kubectl get objectstore -n "$NAMESPACE" -o yaml
 
     - name: cleanup-cluster
       try:

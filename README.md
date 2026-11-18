@@ -228,12 +228,50 @@ Stateful workloads additionally report:
 | Persistent storage | ✅ | `spec.components.engine.storage` |
 | Storage expansion | ✅ | when the StorageClass allows volume expansion (`resizeInUseVolumes`) |
 | Separate WAL volume | ✅ | `spec.components.engine.parameters.walStorage` maps directly to CNPG `spec.walStorage` |
-| Backups (on demand) | ✅ | operator-native (`executionMode: ProviderManaged`) via the Barman Cloud Plugin; one backup storage per Instance (CNPG supports a single WAL archive) |
+| Backups (on demand) | ✅ | operator-native via the Barman Cloud Plugin; one backup storage per Instance (CNPG supports a single WAL archive) |
+| Backup storages | ✅ | the `s3` BackupStorageClass (AWS, MinIO, Ceph and other S3-compatible stores; not GCS); custom CA through `spec.tls.ca`, `insecureSkipVerify` is not supported by Barman |
 | Restore | ✅ | from a succeeded Backup via Barman |
 | Scheduled backups | ✅ | `spec.backup.storages[].schedules` → CNPG `ScheduledBackup`; mirrored as OpenEverest `Backup` CRs |
 | Schedule retention | ✅ | time-based recovery windows are delegated to CNPG/Barman via ObjectStore retentionPolicy; count-based retention is rejected |
 | Backup deletion | ✅ | `deletionPolicy: Delete` removes the Barman base backup; `Retain` removes only the CNPG Backup resource |
 | PITR | ✅ | restore to a point in time via `spec.dataSource` |
+
+### Backup storages
+
+The provider ships the `cnpg-barman-plugin` BackupClass, which writes to
+BackupStorages of the `s3` BackupStorageClass:
+
+```yaml
+apiVersion: backup.openeverest.io/v1alpha1
+kind: BackupStorage
+metadata:
+  name: s3
+spec:
+  backupStorageClassRef:
+    name: s3
+  location:
+    objectStore:
+      bucket: backups
+  parameters:
+    region: us-east-1
+    endpointURL: https://minio.example.com
+    implementation: minio
+  authentication:
+    mode: AccessKey
+    credentialsSecretRef:
+      name: s3-credentials # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  tls:
+    ca:
+      secretKeyRef:
+        name: s3-ca
+        key: ca.crt
+```
+
+Barman cannot skip certificate verification, so a storage with
+`tls.insecureSkipVerify: true` is incompatible with the class; trust a private
+CA through `tls.ca` instead. GCS is not supported through the S3 class.
+Restores read the source backup through a dedicated
+`<instance>-restore-source-<hash>` ObjectStore.
 
 ### Backup retention and deletion
 
@@ -250,10 +288,10 @@ specify the same duration or all omit retention (keep all). The window applies
 to that cluster's entire Barman archive, including on-demand backups and WAL,
 not independently to each schedule. Barman preserves the base backup needed to
 recover from the beginning of the window. Count retention is not supported.
-Instances in one namespace that use the same backup storage share its
-ObjectStore, so they must also agree on retention. An Instance whose retention
-would change the policy already stored is refused with a
-`BackupRetentionConflict` on its `BackupConfigured` condition.
+Each Instance gets its own ObjectStore per backup storage
+(`<instance>-<storage>-<hash>`), writing under the Instance's own path in the
+bucket (`<prefix>/backups/<namespace>/<instance>/<uid>/<storage>/`), so
+Instances sharing a backup storage keep independent retention.
 The OpenEverest dev.4 schedule form edits only count retention ("retention
 copies"), which this provider rejects. Leave copies at 0 and set time retention
 through the API or CLI.
@@ -930,7 +968,7 @@ make generate           # RBAC, provider spec, Helm chart sync
 make run                # run the provider locally against the cluster (without the admission webhook)
 make test               # unit tests
 make test-integration   # chainsaw suites under test/integration/
-make test-integration-backup # backup integration suite against S3Mock
+make test-e2e-cluster-backup # backup e2e-cluster suite against S3Mock (needs OpenEverest core)
 make dev-down
 ```
 
@@ -960,8 +998,8 @@ code generation, and the backup/restore interfaces are documented once for all p
 | `definition/` | Provider identity, component types, versions, topologies, backup classes |
 | `charts/provider-cloudnative-pg/` | Helm chart (`generated/` is produced by `make generate`) |
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
-| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `backup`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `presets`, `tls-only`, `wal-storage` |
-| `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup-restore`, `backup-deletion`, `monitoring` |
+| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `presets`, `tls-only`, `wal-storage` |
+| `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup`, `backup-restore`, `backup-deletion`, `monitoring` |
 | `test/testdata/` | Fixtures shared by the suites (S3Mock object store) |
 | `test/e2e/` | Playwright UI tests against the OpenEverest UI |
 | `test/vars.sh` | Pinned versions used by tests |
@@ -974,7 +1012,7 @@ code generation, and the backup/restore interfaces are documented once for all p
 - **Unit tests** — `make test`.
 - **Integration tests** — chainsaw suites under [test/integration/](test/integration/).
   Individual suites are also exposed as make targets (`make test-integration-core`,
-  `make test-integration-backup`, `make test-integration-core-replicaset`, `make test-integration-extensions`, …).
+  `make test-integration-core-replicaset`, `make test-integration-extensions`, …).
   The extension suites run a one-instance PostgreSQL and use each extension through `psql`;
   `extensions/pgcron-pgrepack` and `extensions/pgpartman` run two instances to check that pg_cron
   jobs and pg_partman maintenance resume after a switchover. `extensions/imagevolume`,
@@ -997,6 +1035,9 @@ code generation, and the backup/restore interfaces are documented once for all p
   the [openeverest/helm-charts](https://github.com/openeverest/helm-charts) chart at
   `OPENEVEREST_CHARTS_REF`, the image core's CI publishes from `main`, and the CRDs of the core
   pinned in `go.mod`; `OPENEVEREST_CHARTS_REF=` installs the release instead.
+  `backup` (`make test-e2e-cluster-backup`) takes a scheduled and an on-demand backup, checks the
+  Instance's ObjectStore and its path in the bucket, and deletes a Backup with its data. It needs
+  core, which accepts the BackupClass and the BackupStorage.
   `backup-restore` writes data, takes a Backup, restores it into a new Instance through
   `spec.dataSource`, and checks the data. `backup-deletion` checks that schedule retention reaches
   the Barman ObjectStore, that deleting a `Retain` Backup keeps its objects in the object store, and

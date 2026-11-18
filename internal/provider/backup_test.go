@@ -6,13 +6,12 @@ import (
 	"testing"
 
 	"github.com/AlekSi/pointer"
-	barmanapi "github.com/cloudnative-pg/barman-cloud/pkg/api"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
-	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
 	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	s3class "github.com/openeverest/openeverest/v2/backupstorageclasses/s3"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +31,7 @@ func cleanupScheme(t *testing.T) *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	barmancloudv1.AddKnownTypes(scheme)
 	for _, add := range []func(*runtime.Scheme) error{
-		cnpgv1.AddToScheme, corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, batchv1.AddToScheme,
+		corev1.AddToScheme, cnpgv1.AddToScheme, corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, batchv1.AddToScheme,
 	} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
@@ -130,22 +129,29 @@ func TestCleanupBackupByCNPGPhase(t *testing.T) {
 					Phase: tt.phase, BackupID: tt.backupID, DestinationPath: "s3://backups/", ServerName: "pg",
 				},
 			}
-			objectStore := &barmancloudv1.ObjectStore{
-				ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-				Spec: barmancloudv1.ObjectStoreSpec{Configuration: barmanapi.BarmanObjectStoreConfiguration{
-					DestinationPath: "s3://backups/",
-					BarmanCredentials: barmanapi.BarmanCredentials{AWS: &barmanapi.S3Credentials{
-						AccessKeyIDReference:     &machineryapi.SecretKeySelector{LocalObjectReference: machineryapi.LocalObjectReference{Name: "creds"}, Key: "AWS_ACCESS_KEY_ID"},
-						SecretAccessKeyReference: &machineryapi.SecretKeySelector{LocalObjectReference: machineryapi.LocalObjectReference{Name: "creds"}, Key: "AWS_SECRET_ACCESS_KEY"},
-					}},
-				}},
-			}
 			storage := &backupv1alpha1.BackupStorage{
 				ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-				Spec:       backupv1alpha1.BackupStorageSpec{S3: &backupv1alpha1.BackupStorageS3Spec{Bucket: "backups"}},
+				Spec: backupv1alpha1.BackupStorageSpec{
+					BackupStorageClassRef: commonv1alpha1.ObjectRef{Name: s3class.ClassName},
+					Location: backupv1alpha1.BackupStorageLocation{
+						ObjectStore: &backupv1alpha1.ObjectStoreLocation{Bucket: "backups"},
+					},
+					Parameters: &runtime.RawExtension{Raw: []byte(`{"region":"us-east-1","endpointURL":"http://minio:9000"}`)},
+					Authentication: commonv1alpha1.Authentication{
+						Mode:                 s3class.AuthModeAccessKey,
+						CredentialsSecretRef: &commonv1alpha1.SecretRef{Name: "creds"},
+					},
+				},
+			}
+			creds := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: testNamespace},
+				Data: map[string][]byte{
+					s3class.KeyAWSAccessKeyID:     []byte("id"),
+					s3class.KeyAWSSecretAccessKey: []byte("secret"),
+				},
 			}
 			cl := fake.NewClientBuilder().WithScheme(cleanupScheme(t)).
-				WithObjects(instance, backup, cnpgBackup, objectStore, storage).Build()
+				WithObjects(instance, backup, cnpgBackup, creds, storage).Build()
 			c := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
 			done, err := (&Provider{}).CleanupBackup(c, backup)
 			if err != nil || done {
@@ -180,7 +186,7 @@ func clusterArchivingTo(storage string, enabled bool) *cnpgv1.Cluster {
 	return &cnpgv1.Cluster{Spec: cnpgv1.ClusterSpec{Plugins: []cnpgv1.PluginConfiguration{{
 		Name:       barman.PluginName,
 		Enabled:    pointer.To(enabled),
-		Parameters: map[string]string{barman.PluginParameterObjectStore: storage},
+		Parameters: map[string]string{barman.PluginParameterObjectStore: barman.ObjectStoreName("pg", storage)},
 	}}}}
 }
 
@@ -352,8 +358,8 @@ func TestSyncBackupStorageChecks(t *testing.T) {
 			}
 			if tt.wantCNPGBackup && !tt.cnpgBackupExists {
 				store := cnpgBackup.Spec.PluginConfiguration.Parameters[barman.PluginParameterObjectStore]
-				if store != tt.backupStorage {
-					t.Errorf("CNPG Backup object store = %q, want %q", store, tt.backupStorage)
+				if want := barman.ObjectStoreName("pg", tt.backupStorage); store != want {
+					t.Errorf("CNPG Backup object store = %q, want %q", store, want)
 				}
 			}
 		})

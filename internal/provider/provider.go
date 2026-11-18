@@ -16,6 +16,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition/backupclasses"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
@@ -39,7 +40,7 @@ func New() *Provider {
 	if extensionCatalog == "" {
 		extensionCatalog = common.DefaultExtensionCatalog
 	}
-	return &Provider{
+	p := &Provider{
 		extensionCatalog: extensionCatalog,
 		BaseProvider: controller.BaseProvider{
 			ProviderName: common.ProviderName,
@@ -60,6 +61,8 @@ func New() *Provider {
 			},
 		},
 	}
+	p.SetShippedBackupClasses(backupclasses.Shipped())
+	return p
 }
 
 func addBarmanCloudScheme(scheme *runtime.Scheme) error {

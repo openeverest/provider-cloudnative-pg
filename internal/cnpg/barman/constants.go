@@ -14,14 +14,17 @@ const (
 	// barmancloud.cnpg.io ObjectStore resource in the same namespace.
 	PluginParameterObjectStore = "barmanObjectName"
 
-	// EndpointCASecretSuffix is appended to the logical storage name to form the
-	// Secret that ObjectStore.spec.configuration.endpointCA references.
-	// Optional: create it in the Instance namespace (key EndpointCAKey) only for
-	// HTTPS endpoints with a self-signed or private CA.
-	EndpointCASecretSuffix = "-endpoint-ca"
+	// BackupClassName is the BackupClass the provider ships, defined in
+	// definition/backupclasses.
+	BackupClassName = "cnpg-barman-plugin"
 
-	// EndpointCAKey is the Secret data key that must hold the S3 endpoint CA PEM.
-	EndpointCAKey = "ca.crt"
+	// StorageLabel names the BackupStorage an archive ObjectStore of an
+	// Instance renders.
+	StorageLabel = "backup.openeverest.io/storage"
+
+	// RestoreSourceRole is the ObjectStoreName role of the ObjectStore an
+	// Instance bootstraps from.
+	RestoreSourceRole = "restore-source"
 
 	// BackupDeletionImage contains the Barman Cloud CLI version pinned by this
 	// provider's plugin-barman-cloud dependency.

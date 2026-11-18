@@ -16,11 +16,29 @@ kind: BackupStorage
 metadata:
   name: my-s3-backups
 spec:
-  type: s3
-  s3:
-    bucket: my-postgres-backups
+  backupStorageClassRef:
+    name: s3
+  location:
+    objectStore:
+      bucket: my-postgres-backups
+      # prefix: postgres   # optional path within the bucket
+  parameters:
     region: us-east-1
-    # endpointURL: https://s3.example.com   # set for S3-compatible stores
+    endpointURL: https://s3.us-east-1.amazonaws.com
+    # For S3-compatible stores, set the endpoint and the implementation
+    # (minio, ceph or other) and usually forcePathStyle.
+    # endpointURL: https://s3.example.com
+    # implementation: other
     # forcePathStyle: true
+  authentication:
+    mode: AccessKey
     credentialsSecretRef:
       name: my-s3-credentials
+  # A store with a private CA: Barman verifies it against the bundle.
+  # Barman cannot skip certificate verification, so insecureSkipVerify is
+  # rejected by the cnpg-barman-plugin BackupClass.
+  # tls:
+  #   ca:
+  #     secretKeyRef:
+  #       name: my-s3-ca
+  #       key: ca.crt

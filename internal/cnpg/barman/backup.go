@@ -1,7 +1,10 @@
 package barman
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,219 +14,253 @@ import (
 	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
 	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
-	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	s3class "github.com/openeverest/openeverest/v2/backupstorageclasses/s3"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
+	"github.com/openeverest/provider-cloudnative-pg/definition/backupclasses"
 	cnpgbarmanplugin "github.com/openeverest/provider-cloudnative-pg/definition/backupclasses/cnpg-barman-plugin"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
+// SyncBackupInfrastructure renders an ObjectStore for every backup storage of
+// the Instance and returns the Cluster plugin configuration archiving to the
+// first one. Each ObjectStore belongs to the Instance and writes under the
+// Instance's own path in its storage, so Instances sharing a bucket never
+// share an archive. An entry that must not or cannot be rendered keeps the
+// ObjectStore it already has (hold rule), and gets none while it has none.
 func SyncBackupInfrastructure(c *controller.Context) ([]cnpgv1.PluginConfiguration, error) {
 	backupCfg := c.Instance().Spec.Backup
 	if backupCfg == nil || !backupCfg.Enabled || len(backupCfg.Storages) == 0 {
-		return nil, nil
+		return nil, deleteStaleObjectStores(c, nil)
 	}
 
 	if err := EnsureObjectStoreAvailable(c); err != nil {
 		return nil, err
 	}
 
-	mainName := backupCfg.Storages[0].StorageRef.Name
-	for _, strg := range backupCfg.Storages {
-		bg, err := c.BackupStorage(strg.StorageRef.Name)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, controller.WaitFor(fmt.Sprintf(
-					"BackupStorage %q not yet present", strg.StorageRef.Name))
-			}
-			return nil, &controller.BackupConfigError{
-				Reason:  "StorageResolutionFailed",
-				Message: err.Error(),
-			}
+	resolved, err := c.BackupStorages()
+	if err != nil {
+		return nil, err
+	}
+	keep := make(map[string]bool, len(resolved))
+	for _, s := range resolved {
+		keep[s.Name()] = true
+		if !s.Apply() {
+			continue
 		}
-		if bg.Spec.S3 == nil {
-			return nil, &controller.BackupConfigError{
-				Reason:  "UnsupportedStorage",
-				Message: fmt.Sprintf("BackupStorage %q is not S3", bg.Name),
-			}
-		}
-
-		accessKeyID, secretAccessKey, err := c.BackupStorageCredentials(bg)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, controller.WaitFor(fmt.Sprintf(
-					"credentials Secret %q for BackupStorage %q not yet present",
-					bg.Spec.S3.CredentialsSecretRef.Name, bg.Name))
-			}
-			return nil, &controller.BackupConfigError{
-				Reason:  "CredentialsUnavailable",
-				Message: err.Error(),
-			}
-		}
-		if accessKeyID == "" || secretAccessKey == "" {
-			return nil, &controller.BackupConfigError{
-				Reason: "CredentialsIncomplete",
-				Message: fmt.Sprintf(
-					"Secret %q must contain AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
-					bg.Spec.S3.CredentialsSecretRef.Name),
-			}
-		}
-
-		endpointCA, err := endpointCARef(c, strg.StorageRef.Name, bg.Spec.S3.EndpointURL)
-		if err != nil {
-			return nil, err
-		}
-
-		objStore := buildObjectStore(c, strg.StorageRef.Name, bg, endpointCA)
-		retention, err := storageRetentionPolicy(strg)
+		retention, err := storageRetentionPolicy(*s.Entry)
 		if err != nil {
 			return nil, &controller.BackupConfigError{Reason: "InvalidBackupRetention", Message: err.Error()}
 		}
-		if err := checkSharedRetention(c, strg.StorageRef.Name, retention); err != nil {
-			return nil, err
+		objStore, err := BuildObjectStore(c, ObjectStoreName(c.Name(), s.Name()), s.Storage, s.Path)
+		if err != nil {
+			if apiErr := apiStatus(err); apiErr != nil {
+				return nil, fmt.Errorf("render BackupStorage %q: %w", s.Name(), err)
+			}
+			c.RejectBackupStorage(s.Name(), err)
+			continue
 		}
+		objStore.Labels[StorageLabel] = s.Name()
 		objStore.Spec.RetentionPolicy = retention
 		if err := c.Apply(objStore); err != nil {
 			if bce := ObjectStoreCRDMissing(err); bce != nil {
 				return nil, bce
 			}
-			return nil, fmt.Errorf("apply ObjectStore %q: %w", strg.StorageRef.Name, err)
+			return nil, fmt.Errorf("apply ObjectStore %q: %w", objStore.Name, err)
 		}
 	}
-
-	return []cnpgv1.PluginConfiguration{{
-		Name:          PluginName,
-		Enabled:       pointer.To(true),
-		IsWALArchiver: pointer.To(true),
-		Parameters: map[string]string{
-			PluginParameterObjectStore: mainName,
-		},
-	}}, nil
-}
-
-// checkSharedRetention guards the ObjectStore every Instance in the namespace
-// shares for a storage (see #47): Barman applies its retentionPolicy to each
-// cluster that archives there, so the last writer would win. When Instances
-// disagree, only one whose policy differs from the stored one is refused, so
-// the others keep reconciling and the stored policy does not change.
-func checkSharedRetention(c *controller.Context, storageName, retention string) error {
-	self := c.Instance()
-	instances := &corev1alpha1.InstanceList{}
-	if err := c.Client().List(c.Context(), instances, client.InNamespace(self.Namespace)); err != nil {
-		return fmt.Errorf("list Instances sharing storage %q: %w", storageName, err)
+	if err := deleteStaleObjectStores(c, keep); err != nil {
+		return nil, err
 	}
-	var conflicts []string
-	for i := range instances.Items {
-		peer := &instances.Items[i]
-		if peer.Name == self.Name || !peer.DeletionTimestamp.IsZero() ||
-			peer.Spec.ProviderRef.Name != self.Spec.ProviderRef.Name ||
-			peer.Spec.Backup == nil || !peer.Spec.Backup.Enabled {
+
+	stores, err := RenderedObjectStores(c)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range resolved {
+		name, ok := stores[s.Name()]
+		if !ok {
 			continue
 		}
-		for _, strg := range peer.Spec.Backup.Storages {
-			if strg.StorageRef.Name != storageName {
-				continue
-			}
-			// An invalid peer policy fails that Instance's own validation.
-			if policy, err := storageRetentionPolicy(strg); err == nil && policy != retention {
-				conflicts = append(conflicts, fmt.Sprintf("%s (%s)", peer.Name, retentionLabel(policy)))
-			}
-		}
+		return []cnpgv1.PluginConfiguration{{
+			Name:          PluginName,
+			Enabled:       pointer.To(true),
+			IsWALArchiver: pointer.To(true),
+			Parameters: map[string]string{
+				PluginParameterObjectStore: name,
+			},
+		}}, nil
 	}
-	if len(conflicts) == 0 {
-		return nil
-	}
-
-	current := &barmancloudv1.ObjectStore{}
-	if err := c.Get(current, storageName); err != nil {
-		if bce := ObjectStoreCRDMissing(err); bce != nil {
-			return bce
-		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get ObjectStore %q: %w", storageName, err)
-		}
-	} else if current.Spec.RetentionPolicy == retention {
-		return nil
-	}
-	return &controller.BackupConfigError{
-		Reason: "BackupRetentionConflict",
-		Message: fmt.Sprintf(
-			"storage %q is shared in namespace %q with Instances that set a different retention than %s: %s; "+
-				"Barman retention applies to every Instance archiving to the storage, so set the same retention on all of them",
-			storageName, self.Namespace, retentionLabel(retention), strings.Join(conflicts, ", ")),
-	}
+	return nil, nil
 }
 
-func retentionLabel(policy string) string {
-	if policy == "" {
-		return "keep all"
+// RenderedObjectStores returns the ObjectStore of every backup storage of the
+// Instance the engine gets, keyed by BackupStorage name: the entries rendered
+// in this reconcile, and the ones held at the ObjectStore they already have.
+// Schedules and backups only reach these.
+func RenderedObjectStores(c *controller.Context) (map[string]string, error) {
+	backupCfg := c.Instance().Spec.Backup
+	if backupCfg == nil || !backupCfg.Enabled {
+		return nil, nil
 	}
-	return policy
+	resolved, err := c.BackupStorages()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(resolved))
+	for _, s := range resolved {
+		name := ObjectStoreName(c.Name(), s.Name())
+		if s.Apply() {
+			out[s.Name()] = name
+			continue
+		}
+		err := c.Get(&barmancloudv1.ObjectStore{}, name)
+		switch {
+		case err == nil:
+			out[s.Name()] = name
+		case apierrors.IsNotFound(err):
+		default:
+			if bce := ObjectStoreCRDMissing(err); bce != nil {
+				return nil, bce
+			}
+			return nil, fmt.Errorf("get ObjectStore %q: %w", name, err)
+		}
+	}
+	return out, nil
 }
 
-func buildObjectStore(
+// deleteStaleObjectStores deletes the archive ObjectStores of the Instance
+// whose storage is no longer in spec.backup.storages.
+func deleteStaleObjectStores(c *controller.Context, keep map[string]bool) error {
+	stores := &barmancloudv1.ObjectStoreList{}
+	if err := c.List(stores); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil
+		}
+		return fmt.Errorf("list ObjectStores: %w", err)
+	}
+	for i := range stores.Items {
+		store := &stores.Items[i]
+		storage, ok := store.Labels[StorageLabel]
+		if !ok || keep[storage] || !metav1.IsControlledBy(store, c.Instance()) {
+			continue
+		}
+		if err := c.Delete(store); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete ObjectStore %q: %w", store.Name, err)
+		}
+	}
+	return nil
+}
+
+// ObjectStoreName returns the name of the ObjectStore the Instance uses for
+// role, a BackupStorage name or RestoreSourceRole. The hash keeps names of
+// different Instances and roles apart, and long names within a label value.
+func ObjectStoreName(instance, role string) string {
+	const hashLength = 8
+	sum := sha256.Sum256([]byte(instance + "/" + role))
+	hash := hex.EncodeToString(sum[:])[:hashLength]
+	name := instance + "-" + role
+	if maxPrefix := validation.LabelValueMaxLength - hashLength - 1; len(name) > maxPrefix {
+		name = strings.TrimRight(name[:maxPrefix], "-.")
+	}
+	return name + "-" + hash
+}
+
+// BuildObjectStore renders an s3 BackupStorage as an ObjectStore named name
+// whose WALs and base backups go under location in the storage's bucket.
+func BuildObjectStore(
 	c *controller.Context,
-	logicalName string,
-	bg *backupv1alpha1.BackupStorage,
-	endpointCA *machineryapi.SecretKeySelector,
-) *barmancloudv1.ObjectStore {
-	s3 := bg.Spec.S3
-	secretName := s3.CredentialsSecretRef.Name
-
+	name string,
+	bs *backupv1alpha1.BackupStorage,
+	location string,
+) (*barmancloudv1.ObjectStore, error) {
+	config, err := ObjectStoreConfiguration(c, bs, DestinationPath(bs, location))
+	if err != nil {
+		return nil, err
+	}
+	config.Wal = &barmanapi.WalBackupConfiguration{
+		Compression: barmanapi.CompressionTypeGzip,
+	}
 	return &barmancloudv1.ObjectStore{
-		ObjectMeta: c.ObjectMeta(logicalName),
+		ObjectMeta: c.ObjectMeta(name),
 		Spec: barmancloudv1.ObjectStoreSpec{
-			Configuration: barmanapi.BarmanObjectStoreConfiguration{
-				EndpointURL:     s3.EndpointURL,
-				EndpointCA:      endpointCA,
-				DestinationPath: fmt.Sprintf("s3://%s/", s3.Bucket),
-				BarmanCredentials: barmanapi.BarmanCredentials{
-					AWS: &barmanapi.S3Credentials{
-						AccessKeyIDReference: &cnpgv1.SecretKeySelector{
-							LocalObjectReference: cnpgv1.LocalObjectReference{Name: secretName},
-							Key:                  "AWS_ACCESS_KEY_ID",
-						},
-						SecretAccessKeyReference: &cnpgv1.SecretKeySelector{
-							LocalObjectReference: cnpgv1.LocalObjectReference{Name: secretName},
-							Key:                  "AWS_SECRET_ACCESS_KEY",
-						},
-					},
+			Configuration: config,
+		},
+	}, nil
+}
+
+// DestinationPath is the Barman destination path for location in bs's
+// bucket. Barman writes each server under it, in a folder named after it.
+func DestinationPath(bs *backupv1alpha1.BackupStorage, location string) string {
+	var bucket string
+	if store := bs.Spec.Location.ObjectStore; store != nil {
+		bucket = store.Bucket
+	}
+	location = strings.Trim(location, "/")
+	if location == "" {
+		return "s3://" + bucket + "/"
+	}
+	return "s3://" + bucket + "/" + location + "/"
+}
+
+// ObjectStoreConfiguration renders the connection to an s3 BackupStorage
+// writing to destination. Barman reads the AWS_ACCESS_KEY_ID and
+// AWS_SECRET_ACCESS_KEY of the storage's credentials Secret.
+func ObjectStoreConfiguration(
+	c *controller.Context,
+	bs *backupv1alpha1.BackupStorage,
+	destination string,
+) (barmanapi.BarmanObjectStoreConfiguration, error) {
+	s3, _, err := c.BackupStorageS3(bs)
+	if err != nil {
+		return barmanapi.BarmanObjectStoreConfiguration{}, err
+	}
+	if s3.EffectiveImplementation() == s3class.ImplementationGCS {
+		return barmanapi.BarmanObjectStoreConfiguration{}, fmt.Errorf(
+			"barman cloud cannot use GCS through its S3 client: %w", controller.ErrImplementationUnsupported)
+	}
+	tls, err := c.BackupStorageTLS(bs, backupclasses.TLSSupport(BackupClassName, s3class.ClassName))
+	if err != nil {
+		return barmanapi.BarmanObjectStoreConfiguration{}, err
+	}
+	secretName := bs.Spec.Authentication.CredentialsSecretRef.Name
+
+	config := barmanapi.BarmanObjectStoreConfiguration{
+		EndpointURL:     s3.EndpointURL,
+		DestinationPath: destination,
+		BarmanCredentials: barmanapi.BarmanCredentials{
+			AWS: &barmanapi.S3Credentials{
+				AccessKeyIDReference: &machineryapi.SecretKeySelector{
+					LocalObjectReference: machineryapi.LocalObjectReference{Name: secretName},
+					Key:                  s3class.KeyAWSAccessKeyID,
 				},
-				Wal: &barmanapi.WalBackupConfiguration{
-					Compression: barmanapi.CompressionTypeGzip,
+				SecretAccessKeyReference: &machineryapi.SecretKeySelector{
+					LocalObjectReference: machineryapi.LocalObjectReference{Name: secretName},
+					Key:                  s3class.KeyAWSSecretAccessKey,
 				},
 			},
 		},
 	}
+	if ref := tls.CASecretKeyRef; ref != nil {
+		config.EndpointCA = &machineryapi.SecretKeySelector{
+			LocalObjectReference: machineryapi.LocalObjectReference{Name: ref.Name},
+			Key:                  ref.Key,
+		}
+	}
+	return config, nil
 }
 
-func endpointCARef(c *controller.Context, logicalName, endpointURL string) (*machineryapi.SecretKeySelector, error) {
-	if !strings.HasPrefix(strings.ToLower(endpointURL), "https://") {
-		return nil, nil
+// apiStatus returns err as an API error, nil when it is not one: a failure
+// to read the cluster, not a storage the engine cannot use.
+func apiStatus(err error) apierrors.APIStatus {
+	var apiErr apierrors.APIStatus
+	if errors.As(err, &apiErr) {
+		return apiErr
 	}
-
-	name := logicalName + EndpointCASecretSuffix
-	secret := &corev1.Secret{}
-	if err := c.Get(secret, name); err != nil {
-		// No custom CA: rely on the system trust store (public CAs, e.g. AWS S3).
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get endpoint CA Secret %q: %w", name, err)
-	}
-	if len(secret.Data[EndpointCAKey]) == 0 {
-		return nil, &controller.BackupConfigError{
-			Reason:  "EndpointCAInvalid",
-			Message: fmt.Sprintf("Secret %q missing key %q", name, EndpointCAKey),
-		}
-	}
-
-	return &machineryapi.SecretKeySelector{
-		LocalObjectReference: machineryapi.LocalObjectReference{Name: name},
-		Key:                  EndpointCAKey,
-	}, nil
+	return nil
 }
 
 func DecodeBackupConfig(backup *backupv1alpha1.Backup) (cnpgbarmanplugin.CnpgBarmanPluginBackupConfig, error) {

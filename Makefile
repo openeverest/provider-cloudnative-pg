@@ -105,11 +105,11 @@ generate: manifests helm-sync-rbac ## Run all code generation (RBAC + Helm sync 
 .PHONY: verify
 verify: ## Verify that generated files are up-to-date (for CI).
 	@$(MAKE) generate
-	@if git diff --quiet -- config/ $(CHART_DIR)/generated/; then \
+	@if git diff --quiet -- config/ definition/ $(CHART_DIR)/generated/; then \
 		echo "Generated files are up-to-date."; \
 	else \
 		echo "ERROR: Generated files are out of date. Run 'make generate' and commit the changes."; \
-		git diff -- config/ $(CHART_DIR)/generated/; \
+		git diff -- config/ definition/ $(CHART_DIR)/generated/; \
 		exit 1; \
 	fi
 
@@ -169,10 +169,6 @@ test-integration-wal: ## Run separate WAL volume tests (needs jq; physical expan
 test-integration-core: ## Run core integration tests (chainsaw).
 	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/core
 
-.PHONY: test-integration-backup
-test-integration-backup: ## Run backup integration tests (requires CNPG, the Barman plugin, and BackupClasses).
-	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/backup
-
 .PHONY: test-integration-core-admission
 test-integration-core-admission: ## Run the admission webhook integration test (scales the provider down; not concurrent).
 	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/core/admission
@@ -196,6 +192,10 @@ test-integration-imagevolume: ## Run the image-volume extensions integration tes
 .PHONY: test-e2e-cluster
 test-e2e-cluster: ## Run e2e-cluster suites (chainsaw) against OpenEverest core and this provider (see `make install-openeverest`).
 	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster
+
+.PHONY: test-e2e-cluster-backup
+test-e2e-cluster-backup: ## Run the scheduled and on-demand backup e2e-cluster suite against S3Mock.
+	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster/backup
 
 .PHONY: test-e2e-cluster-backup-deletion
 test-e2e-cluster-backup-deletion: ## Run the backup retention and deletion e2e-cluster suite.

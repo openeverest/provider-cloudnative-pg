@@ -46,7 +46,7 @@ func TestMirror(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-daily-20261005", Namespace: "ns"},
 			Spec: cnpgv1.BackupSpec{
 				Cluster:             cnpgv1.LocalObjectReference{Name: "pg"},
-				PluginConfiguration: barman.PluginConfiguration("s3"),
+				PluginConfiguration: barman.PluginConfiguration(barman.ObjectStoreName("pg", "s3")),
 			},
 		}
 		if sbName != "" {

@@ -7,18 +7,11 @@ import (
 	"github.com/AlekSi/pointer"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
-	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
-	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
-	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestArchiveObjectStoreName(t *testing.T) {
@@ -95,36 +88,8 @@ func (c noMatchObjectStoreClient) Get(ctx context.Context, key client.ObjectKey,
 }
 
 func TestSyncBackupInfrastructureMissingCRD(t *testing.T) {
-	scheme := runtime.NewScheme()
-	barmancloudv1.AddKnownTypes(scheme)
-	for _, add := range []func(*runtime.Scheme) error{
-		corev1.AddToScheme, corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
-	} {
-		if err := add(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	instance := &corev1alpha1.Instance{
-		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
-		Spec: corev1alpha1.InstanceSpec{
-			Backup: &corev1alpha1.InstanceBackupSpec{
-				Enabled:  true,
-				Storages: []corev1alpha1.InstanceBackupStorage{storageWithSchedules("s3")},
-			},
-		},
-	}
-	bg := &backupv1alpha1.BackupStorage{
-		ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-		Spec: backupv1alpha1.BackupStorageSpec{S3: &backupv1alpha1.BackupStorageS3Spec{
-			Bucket: "backups", CredentialsSecretRef: commonv1alpha1.SecretRef{Name: "credentials"},
-		}},
-	}
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: testNamespace},
-		Data:       map[string][]byte{"AWS_ACCESS_KEY_ID": []byte("test"), "AWS_SECRET_ACCESS_KEY": []byte("test")},
-	}
-	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, bg, secret).Build()
+	instance := backupInstance("pg", "uid-1", "s3")
+	_, base := storageTestContext(t, instance, testBackupStorage("s3", minioParameters, nil))
 	ctx := controller.NewContext(context.Background(), noMatchObjectStoreClient{Client: base}, instance, "provider-cloudnative-pg")
 
 	_, err := SyncBackupInfrastructure(ctx)
