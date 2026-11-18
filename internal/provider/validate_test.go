@@ -105,6 +105,19 @@ func TestValidate(t *testing.T) {
 			},
 			want: []string{"spec.components[proxy]"},
 		},
+		{
+			name: "read-only proxy with one engine replica",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Replicas = new(int32(1))
+				in.Spec.Components[common.ComponentEngine] = engine
+				in.Spec.Components[common.ComponentProxy] = corev1alpha1.ComponentSpec{
+					Replicas:   new(int32(1)),
+					Parameters: &runtime.RawExtension{Raw: []byte(`{"readOnly":true}`)},
+				}
+			},
+			want: []string{"spec.components[proxy]"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
