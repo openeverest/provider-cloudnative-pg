@@ -564,13 +564,13 @@ ui:
         - logicalSlotFailover
     pooler:
       label: "Connection pooler"
-      description: "PgBouncer in front of the primary. While this is on, clients connect to the pooler."
+      description: "PgBouncer in front of the primary. While this is on, clients connect to the pooler. Optionally also pool connections to the replicas."
       components:
         pgbouncer:
           uiType: group
           groupType: toggleable
           label: "PgBouncer"
-          description: "A CloudNativePG Pooler of type rw. It forwards to the primary and listens on port 5432. The operator runs its own PgBouncer image."
+          description: "A CloudNativePG Pooler of type rw in front of the primary, listening on port 5432. Optionally also a type ro Pooler for the replicas. The operator runs its own PgBouncer image."
           components:
             # Writes spec.components.proxy.type so the toggle owns it: switching
             # off then removes the whole proxy component, not just its fields.
@@ -600,6 +600,13 @@ ui:
                     value: transaction
               validation:
                 required: true
+            readOnly:
+              uiType: toggle
+              path: spec.components.proxy.parameters.readOnly
+              fieldParams:
+                label: "Also pool read-only connections"
+                helperText: "Creates a second Pooler (type ro) in front of the replicas. host-ro in the connection Secret points at it. Needs at least two database instances."
+                defaultValue: false
             instances:
               path: spec.components.proxy.replicas
               uiType: number
@@ -679,6 +686,7 @@ ui:
           componentsOrder:
             - type
             - poolMode
+            - readOnly
             - instances
             - resources
     advanced:

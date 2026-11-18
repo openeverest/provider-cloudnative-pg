@@ -1229,6 +1229,8 @@ spec:
           properties:
             poolMode:
               type: string
+            readOnly:
+              type: boolean
           type: object
       type: pgbouncer
   defaultVersion: "18.7"
@@ -1674,6 +1676,13 @@ spec:
                   uiType: select
                   validation:
                     required: true
+                readOnly:
+                  fieldParams:
+                    defaultValue: false
+                    helperText: Creates a second Pooler (type ro) in front of the replicas. host-ro in the connection Secret points at it. Needs at least two database instances.
+                    label: Also pool read-only connections
+                  path: spec.components.proxy.parameters.readOnly
+                  uiType: toggle
                 resources:
                   components:
                     cpu-limits:
@@ -1752,13 +1761,14 @@ spec:
               componentsOrder:
                 - type
                 - poolMode
+                - readOnly
                 - instances
                 - resources
-              description: A CloudNativePG Pooler of type rw. It forwards to the primary and listens on port 5432. The operator runs its own PgBouncer image.
+              description: A CloudNativePG Pooler of type rw in front of the primary, listening on port 5432. Optionally also a type ro Pooler for the replicas. The operator runs its own PgBouncer image.
               groupType: toggleable
               label: PgBouncer
               uiType: group
-          description: PgBouncer in front of the primary. While this is on, clients connect to the pooler.
+          description: PgBouncer in front of the primary. While this is on, clients connect to the pooler. Optionally also pool connections to the replicas.
           label: Connection pooler
         resources:
           components:
