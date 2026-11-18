@@ -9,7 +9,7 @@ spec:
   components:
     engine:
       type: postgresql
-      replicas: 1
+      replicas: 2
       resources:
         requests:
           cpu: 100m
@@ -33,3 +33,4 @@ spec:
           memory: 128Mi
       parameters:
         poolMode: transaction
+        readOnly: true

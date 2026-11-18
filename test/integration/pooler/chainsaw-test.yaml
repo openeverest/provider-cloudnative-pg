@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
-# The proxy component becomes a CloudNativePG Pooler (type rw). Clients connect
-# through its Service, which the operator names after the Pooler.
+# The proxy component becomes CloudNativePG Poolers (type rw, and type ro when
+# readOnly is set). Clients connect through their Services, which the operator
+# names after each Pooler.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -14,19 +15,22 @@ spec:
         - apply:
             file: 00-instance.yaml
         - script:
-            timeout: 6m
+            timeout: 8m
             content: |
               set -eu
               kubectl wait --for=create cluster/pooled -n "$NAMESPACE" --timeout=60s
-              kubectl wait --for=condition=Ready cluster/pooled -n "$NAMESPACE" --timeout=300s
+              kubectl wait --for=condition=Ready cluster/pooled -n "$NAMESPACE" --timeout=420s
               kubectl wait --for=create pooler/pooled-pooler -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=create pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=jsonpath='{.status.phase}'=active pooler/pooled-pooler -n "$NAMESPACE" --timeout=180s
+              kubectl wait --for=jsonpath='{.status.phase}'=active pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
               kubectl wait --for=condition=Available deployment/pooled-pooler -n "$NAMESPACE" --timeout=180s
+              kubectl wait --for=condition=Available deployment/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
       catch:
         - script:
             content: kubectl get instance,cluster,pooler,deploy,pod -n "$NAMESPACE" -o wide
         - script:
-            content: kubectl get pooler/pooled-pooler -n "$NAMESPACE" -o yaml
+            content: kubectl get pooler -n "$NAMESPACE" -o yaml
 
     - name: connect-through-pooler
       try:
@@ -41,10 +45,17 @@ spec:
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].name}')" = pgbouncer
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}')" = 100m
 
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.type}')" = ro
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.cluster.name}')" = pooled
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.poolMode}')" = transaction
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.instances}')" = 1
+
               kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=120s
               secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
               test "$host" = "pooled-pooler.$NAMESPACE.svc"
+              host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+              test "$host_ro" = "pooled-pooler-ro.$NAMESPACE.svc"
               uri="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.uri}' | base64 -d)"
               case "$uri" in *"@pooled-pooler.$NAMESPACE.svc:5432/app?sslmode=require") ;; *) echo "unexpected uri host/port"; exit 1 ;; esac
               password="$(kubectl get secret pooled-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
@@ -52,6 +63,7 @@ spec:
               test -n "$ips"
               # requireTLS also applies at the pooler (client_tls_sslmode=require).
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.parameters.client_tls_sslmode}')" = require
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.parameters.client_tls_sslmode}')" = require
               for _ in $(seq 1 30); do
                 plain="$(kubectl exec -n "$NAMESPACE" pooled-1 -c postgres -- env PGPASSWORD="$password" \
                   psql "host=pooled-pooler user=app dbname=app sslmode=disable" -tAc 'SELECT 1' 2>&1 || true)"
@@ -79,7 +91,7 @@ spec:
         - script:
             content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
         - script:
-            content: kubectl get pooler,deploy,pod -n "$NAMESPACE" -l cnpg.io/poolerName=pooled-pooler -o yaml
+            content: kubectl get pooler,deploy,pod -n "$NAMESPACE" -o yaml
 
     - name: remove-proxy
       try:
@@ -90,6 +102,7 @@ spec:
               kubectl patch instance/pooled -n "$NAMESPACE" --type=json \
                 -p '[{"op":"remove","path":"/spec/components/proxy"}]'
               kubectl wait --for=delete pooler/pooled-pooler -n "$NAMESPACE" --timeout=120s
+              kubectl wait --for=delete pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=120s
               secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               for _ in $(seq 1 30); do
                 host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
@@ -98,6 +111,8 @@ spec:
               done
               echo "host after removing the proxy: $host"
               test "$host" = "pooled-rw.$NAMESPACE.svc"
+              host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+              test "$host_ro" = "pooled-ro.$NAMESPACE.svc"
               kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
       catch:
         - script:
