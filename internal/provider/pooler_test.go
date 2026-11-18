@@ -27,7 +27,7 @@ import (
 func TestBuildPooler(t *testing.T) {
 	c := proxyContext(t, proxyComponent(`{"poolMode":"transaction"}`, ptr.To(int32(2)), proxyResources()))
 
-	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), false)
+	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), false, poolerName(c.Name()), cnpgv1.PoolerTypeRW)
 
 	if pooler.Name != "pg-pooler" {
 		t.Fatalf("name = %q", pooler.Name)
@@ -59,10 +59,29 @@ func TestBuildPooler(t *testing.T) {
 	}
 }
 
+func TestBuildPoolerReadOnly(t *testing.T) {
+	c := proxyContext(t, proxyComponent(`{"poolMode":"session","readOnly":true}`, ptr.To(int32(1)), nil))
+
+	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), false, poolerROName(c.Name()), cnpgv1.PoolerTypeRO)
+
+	if pooler.Name != "pg-pooler-ro" {
+		t.Fatalf("name = %q", pooler.Name)
+	}
+	if pooler.Spec.Type != cnpgv1.PoolerTypeRO {
+		t.Fatalf("type = %q", pooler.Spec.Type)
+	}
+	if pooler.Spec.Cluster.Name != "pg" {
+		t.Fatalf("cluster = %q", pooler.Spec.Cluster.Name)
+	}
+	if pooler.Spec.PgBouncer.PoolMode != cnpgv1.PgBouncerPoolModeSession {
+		t.Fatalf("pool mode = %q", pooler.Spec.PgBouncer.PoolMode)
+	}
+}
+
 func TestBuildPoolerDefaults(t *testing.T) {
 	c := proxyContext(t, corev1alpha1.ComponentSpec{})
 
-	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), false)
+	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), false, poolerName(c.Name()), cnpgv1.PoolerTypeRW)
 
 	if pooler.Spec.Instances == nil || *pooler.Spec.Instances != 1 {
 		t.Fatalf("instances = %v, want the operator default of 1", pooler.Spec.Instances)
@@ -81,7 +100,7 @@ func TestBuildPoolerDefaults(t *testing.T) {
 func TestBuildPoolerRequireTLS(t *testing.T) {
 	c := proxyContext(t, corev1alpha1.ComponentSpec{})
 
-	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), true)
+	pooler := buildPooler(c, c.Instance().Spec.Components[common.ComponentProxy], mustProxyParams(t, c), true, poolerName(c.Name()), cnpgv1.PoolerTypeRW)
 
 	if got := pooler.Spec.PgBouncer.Parameters[pgbouncerClientTLSSSLMode]; got != "require" {
 		t.Fatalf("%s = %q, want require", pgbouncerClientTLSSSLMode, got)
@@ -91,6 +110,7 @@ func TestBuildPoolerRequireTLS(t *testing.T) {
 func TestValidateProxy(t *testing.T) {
 	tests := []struct {
 		name    string
+		engine  corev1alpha1.ComponentSpec
 		proxy   corev1alpha1.ComponentSpec
 		wantErr string
 	}{
@@ -101,6 +121,22 @@ func TestValidateProxy(t *testing.T) {
 		{name: "zero replicas", proxy: proxyComponent("", ptr.To(int32(0)), nil), wantErr: "at least 1"},
 		{name: "pgbouncer type", proxy: corev1alpha1.ComponentSpec{Type: common.ComponentTypePgbouncer}},
 		{name: "unknown type", proxy: corev1alpha1.ComponentSpec{Type: "pgpool"}, wantErr: "pgpool"},
+		{
+			name:    "readOnly with two engine replicas",
+			engine:  corev1alpha1.ComponentSpec{Replicas: ptr.To(int32(2))},
+			proxy:   proxyComponent(`{"readOnly":true}`, ptr.To(int32(1)), nil),
+		},
+		{
+			name:    "readOnly with one engine replica",
+			engine:  corev1alpha1.ComponentSpec{Replicas: ptr.To(int32(1))},
+			proxy:   proxyComponent(`{"readOnly":true}`, ptr.To(int32(1)), nil),
+			wantErr: "at least 2 engine replicas",
+		},
+		{
+			name:    "readOnly without engine replicas",
+			proxy:   proxyComponent(`{"readOnly":true}`, nil, nil),
+			wantErr: "at least 2 engine replicas",
+		},
 		{
 			name: "cpu request greater than limit",
 			proxy: proxyComponent(`{"poolMode":"session"}`, ptr.To(int32(1)), &corev1.ResourceRequirements{
@@ -127,7 +163,11 @@ func TestValidateProxy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateProxy(proxyContext(t, tt.proxy).Instance())
+			c := proxyContext(t, tt.proxy)
+			if tt.engine.Replicas != nil || tt.engine.Type != "" {
+				c.Instance().Spec.Components[common.ComponentEngine] = tt.engine
+			}
+			err := validateProxy(c.Instance())
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -149,6 +189,16 @@ func TestValidateProxyRejectsANameTheServiceCannotUse(t *testing.T) {
 	}
 }
 
+func TestValidateProxyRejectsAReadOnlyNameTheServiceCannotUse(t *testing.T) {
+	c := proxyContext(t, proxyComponent(`{"readOnly":true}`, ptr.To(int32(1)), nil))
+	c.Instance().Spec.Components[common.ComponentEngine] = corev1alpha1.ComponentSpec{Replicas: ptr.To(int32(2))}
+	// "-pooler" fits in 63 chars at length 56; "-pooler-ro" does not.
+	c.Instance().Name = strings.Repeat("a", 56)
+	if err := validateProxy(c.Instance()); err == nil {
+		t.Fatal("expected the read-only pooler Service name to be rejected")
+	}
+}
+
 func TestSyncPooler(t *testing.T) {
 	t.Run("creates the pooler", func(t *testing.T) {
 		c, cl := proxyContextWithClient(t, proxyComponent(`{"poolMode":"session"}`, ptr.To(int32(1)), nil))
@@ -162,19 +212,71 @@ func TestSyncPooler(t *testing.T) {
 		if got.Spec.Type != cnpgv1.PoolerTypeRW || got.Spec.PgBouncer.PoolMode != cnpgv1.PgBouncerPoolModeSession {
 			t.Fatalf("spec = %+v", got.Spec)
 		}
+		err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler-ro"}, &cnpgv1.Pooler{})
+		if client.IgnoreNotFound(err) != nil || err == nil {
+			t.Fatalf("ro pooler get err = %v, want not found", err)
+		}
 	})
 
-	t.Run("deletes the pooler when the component is removed", func(t *testing.T) {
-		c, cl := proxyContextWithClient(t)
-		if err := cl.Create(context.Background(), &cnpgv1.Pooler{ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace}}); err != nil {
+	t.Run("creates the read-only pooler", func(t *testing.T) {
+		c, cl := proxyContextWithClient(t, proxyComponent(`{"poolMode":"transaction","readOnly":true}`, ptr.To(int32(2)), nil))
+		if err := syncPooler(c, true); err != nil {
+			t.Fatal(err)
+		}
+		rw := &cnpgv1.Pooler{}
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler"}, rw); err != nil {
+			t.Fatal(err)
+		}
+		if rw.Spec.Type != cnpgv1.PoolerTypeRW {
+			t.Fatalf("rw type = %q", rw.Spec.Type)
+		}
+		ro := &cnpgv1.Pooler{}
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler-ro"}, ro); err != nil {
+			t.Fatal(err)
+		}
+		if ro.Spec.Type != cnpgv1.PoolerTypeRO || ro.Spec.PgBouncer.PoolMode != cnpgv1.PgBouncerPoolModeTransaction {
+			t.Fatalf("ro spec = %+v", ro.Spec)
+		}
+		if ro.Spec.Instances == nil || *ro.Spec.Instances != 2 {
+			t.Fatalf("ro instances = %v", ro.Spec.Instances)
+		}
+		if got := ro.Spec.PgBouncer.Parameters[pgbouncerClientTLSSSLMode]; got != "require" {
+			t.Fatalf("ro %s = %q", pgbouncerClientTLSSSLMode, got)
+		}
+	})
+
+	t.Run("deletes the read-only pooler when readOnly is turned off", func(t *testing.T) {
+		c, cl := proxyContextWithClient(t, proxyComponent(`{"poolMode":"session"}`, ptr.To(int32(1)), nil))
+		if err := cl.Create(context.Background(), &cnpgv1.Pooler{ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler-ro", Namespace: testNamespace}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := syncPooler(c, false); err != nil {
 			t.Fatal(err)
 		}
-		err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler"}, &cnpgv1.Pooler{})
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler"}, &cnpgv1.Pooler{}); err != nil {
+			t.Fatal(err)
+		}
+		err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "pg-pooler-ro"}, &cnpgv1.Pooler{})
 		if client.IgnoreNotFound(err) != nil || err == nil {
-			t.Fatalf("pooler get err = %v, want not found", err)
+			t.Fatalf("ro pooler get err = %v, want not found", err)
+		}
+	})
+
+	t.Run("deletes the poolers when the component is removed", func(t *testing.T) {
+		c, cl := proxyContextWithClient(t)
+		for _, name := range []string{"pg-pooler", "pg-pooler-ro"} {
+			if err := cl.Create(context.Background(), &cnpgv1.Pooler{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := syncPooler(c, false); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"pg-pooler", "pg-pooler-ro"} {
+			err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &cnpgv1.Pooler{})
+			if client.IgnoreNotFound(err) != nil || err == nil {
+				t.Fatalf("%s get err = %v, want not found", name, err)
+			}
 		}
 	})
 
@@ -187,9 +289,12 @@ func TestSyncPooler(t *testing.T) {
 }
 
 func TestPoolerConnectionDetails(t *testing.T) {
-	cluster := readyCluster(&cnpgv1.Cluster{Spec: cnpgv1.ClusterSpec{Bootstrap: &cnpgv1.BootstrapConfiguration{
-		InitDB: &cnpgv1.BootstrapInitDB{Database: "app", Owner: "app", Secret: &cnpgv1.LocalObjectReference{Name: "custom-app"}},
-	}}})
+	cluster := readyCluster(&cnpgv1.Cluster{Spec: cnpgv1.ClusterSpec{
+		Instances: 2,
+		Bootstrap: &cnpgv1.BootstrapConfiguration{
+			InitDB: &cnpgv1.BootstrapInitDB{Database: "app", Owner: "app", Secret: &cnpgv1.LocalObjectReference{Name: "custom-app"}},
+		},
+	}})
 	secret := credentialSecret("custom-app", "app", "secret", "5432")
 	port := strconv.Itoa(pgbouncerconfig.PgBouncerPort)
 
@@ -199,7 +304,7 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Spec:       cnpgv1.PoolerSpec{Instances: ptr.To(int32(1))},
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
 		}
-		got := proxyStatus(t, cluster, secret, pooler, poolerDeployment(1))
+		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
 		if got.Phase != corev1alpha1.InstancePhaseReady {
 			t.Fatalf("phase = %q (%s)", got.Phase, got.Message)
 		}
@@ -215,13 +320,50 @@ func TestPoolerConnectionDetails(t *testing.T) {
 		}
 	})
 
+	t.Run("points host-ro at the read-only pooler", func(t *testing.T) {
+		rw := &cnpgv1.Pooler{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
+			Spec:       cnpgv1.PoolerSpec{Instances: ptr.To(int32(1))},
+			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
+		}
+		ro := &cnpgv1.Pooler{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler-ro", Namespace: testNamespace},
+			Spec:       cnpgv1.PoolerSpec{Type: cnpgv1.PoolerTypeRO, Instances: ptr.To(int32(1))},
+			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
+		}
+		got := proxyStatus(t, cluster, secret, &runtime.RawExtension{Raw: []byte(`{"readOnly":true}`)},
+			rw, ro, poolerDeployment("pg-pooler", 1), poolerDeployment("pg-pooler-ro", 1))
+		if got.Phase != corev1alpha1.InstancePhaseReady {
+			t.Fatalf("phase = %q (%s)", got.Phase, got.Message)
+		}
+		if got.ConnectionDetails.Host != "pg-pooler.ns.svc" {
+			t.Fatalf("host = %s", got.ConnectionDetails.Host)
+		}
+		if got.ConnectionDetails.AdditionalProperties[hostROProperty] != "pg-pooler-ro.ns.svc" {
+			t.Fatalf("host-ro = %s", got.ConnectionDetails.AdditionalProperties[hostROProperty])
+		}
+	})
+
+	t.Run("waits for the read-only pooler", func(t *testing.T) {
+		rw := &cnpgv1.Pooler{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
+			Spec:       cnpgv1.PoolerSpec{Instances: ptr.To(int32(1))},
+			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
+		}
+		got := proxyStatus(t, cluster, secret, &runtime.RawExtension{Raw: []byte(`{"readOnly":true}`)},
+			rw, poolerDeployment("pg-pooler", 1))
+		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for the CloudNativePG pooler" {
+			t.Fatalf("status = %s %q", got.Phase, got.Message)
+		}
+	})
+
 	t.Run("waits while fewer PgBouncer pods are ready than requested", func(t *testing.T) {
 		pooler := &cnpgv1.Pooler{
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
 			Spec:       cnpgv1.PoolerSpec{Instances: ptr.To(int32(2))},
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 2},
 		}
-		got := proxyStatus(t, cluster, secret, pooler, poolerDeployment(1))
+		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
 		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for PgBouncer pods (1/2 ready)" {
 			t.Fatalf("status = %s %q", got.Phase, got.Message)
 		}
@@ -232,7 +374,7 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive},
 		}
-		got := proxyStatus(t, cluster, secret, pooler)
+		got := proxyStatus(t, cluster, secret, nil, pooler)
 		if got.Phase != corev1alpha1.InstancePhaseProvisioning {
 			t.Fatalf("phase = %q", got.Phase)
 		}
@@ -243,7 +385,7 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseInactive, PhaseReason: "cluster not found"},
 		}
-		got := proxyStatus(t, cluster, secret, pooler, poolerDeployment(1))
+		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
 		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for the CloudNativePG pooler (inactive): cluster not found" {
 			t.Fatalf("status = %s %q", got.Phase, got.Message)
 		}
@@ -254,14 +396,14 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseFailed, PhaseReason: "image catalog missing"},
 		}
-		got := proxyStatus(t, cluster, secret, pooler)
+		got := proxyStatus(t, cluster, secret, nil, pooler)
 		if got.Phase != corev1alpha1.InstancePhaseFailed || got.Message != "failed: image catalog missing" {
 			t.Fatalf("status = %s %q", got.Phase, got.Message)
 		}
 	})
 }
 
-func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, pooler *cnpgv1.Pooler, objs ...client.Object) controller.Status {
+func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, proxyParams *runtime.RawExtension, objs ...client.Object) controller.Status {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{cnpgv1.AddToScheme, corev1.AddToScheme, appsv1.AddToScheme} {
@@ -269,13 +411,14 @@ func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, p
 			t.Fatal(err)
 		}
 	}
+	proxy := corev1alpha1.ComponentSpec{Parameters: proxyParams}
 	instance := &corev1alpha1.Instance{
 		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
 		Spec: corev1alpha1.InstanceSpec{Components: map[string]corev1alpha1.ComponentSpec{
-			common.ComponentProxy: {},
+			common.ComponentProxy: proxy,
 		}},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{cluster, secret, pooler}, objs...)...).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{cluster, secret}, objs...)...).Build()
 	c := controller.NewContext(context.Background(), cl, instance, common.ProviderName)
 	got, err := (&Provider{}).Status(c)
 	if err != nil {
@@ -284,9 +427,9 @@ func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, p
 	return got
 }
 
-func poolerDeployment(ready int32) *appsv1.Deployment {
+func poolerDeployment(name string, ready int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Status:     appsv1.DeploymentStatus{Replicas: ready, ReadyReplicas: ready},
 	}
 }
@@ -301,8 +444,9 @@ func TestInstanceOfPoolerDeployment(t *testing.T) {
 		object metav1.ObjectMeta
 		want   bool
 	}{
-		{name: "pooler deployment", object: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace, Labels: poolerLabels}, want: true},
-		{name: "pooler not managed by the provider", object: metav1.ObjectMeta{Name: "pg-ro-pooler", Namespace: testNamespace, Labels: poolerLabels}},
+		{name: "rw pooler deployment", object: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace, Labels: poolerLabels}, want: true},
+		{name: "ro pooler deployment", object: metav1.ObjectMeta{Name: "pg-pooler-ro", Namespace: testNamespace, Labels: poolerLabels}, want: true},
+		{name: "pooler not managed by the provider", object: metav1.ObjectMeta{Name: "pg-custom-pooler", Namespace: testNamespace, Labels: poolerLabels}},
 		{name: "unrelated deployment", object: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace}},
 	}
 	for _, tt := range tests {
