@@ -1683,6 +1683,10 @@ spec:
                     label: Also pool read-only connections
                   path: spec.components.proxy.parameters.readOnly
                   uiType: toggle
+                  validation:
+                    celExpressions:
+                      - celExpr: '!(has(spec.components.proxy.parameters.readOnly) && spec.components.proxy.parameters.readOnly) || spec.components.engine.replicas >= 2'
+                        message: Read-only pooling needs at least two database instances
                 resources:
                   components:
                     cpu-limits:
@@ -1795,6 +1799,8 @@ spec:
                     celExpressions:
                       - celExpr: '!has(spec.components.engine.parameters.postgresql.synchronous.number) || spec.components.engine.replicas > spec.components.engine.parameters.postgresql.synchronous.number'
                         message: Keep more nodes than synchronous standbys, or lower the synchronous standbys first
+                      - celExpr: '!(has(spec.components.proxy.parameters.readOnly) && spec.components.proxy.parameters.readOnly) || spec.components.engine.replicas >= 2'
+                        message: Keep at least two nodes while read-only pooling is on, or turn it off first
                     int: true
                     min: 1
                     modes:
