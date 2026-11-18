@@ -179,10 +179,17 @@ type VolumeSnapshotSource struct {
 }
 
 // PgBouncerParameters is the proxy component's configuration.
-// The Pooler type is always rw. Instance count and pod resources come from
-// the component's replicas and resources.
+// The provider always creates a Pooler of type rw. With ReadOnly it also
+// creates one of type ro. Instance count and pod resources come from the
+// component's replicas and resources and apply to each Pooler.
 type PgBouncerParameters struct {
 	// PoolMode is the PgBouncer pool mode. CloudNativePG accepts session and
 	// transaction. Empty selects the operator default, session.
 	PoolMode string `json:"poolMode,omitempty"`
+
+	// ReadOnly also creates a CloudNativePG Pooler of type ro that forwards to
+	// the replicas. host-ro in the connection Secret then points at that
+	// Pooler's Service. Requires at least two engine replicas, because the
+	// cluster's -ro Service has no endpoints with a single instance.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
