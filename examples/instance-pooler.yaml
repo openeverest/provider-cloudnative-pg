@@ -1,5 +1,5 @@
-# Instance with a PgBouncer pooler in front of the primary.
-# Connection details (host, port, uri) point at the pooler Service.
+# Instance with PgBouncer in front of the primary (rw) and the replicas (ro).
+# host / uri → <instance>-pooler; host-ro → <instance>-pooler-ro.
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:
@@ -33,3 +33,4 @@ spec:
           memory: 128Mi
       parameters:
         poolMode: transaction
+        readOnly: true
