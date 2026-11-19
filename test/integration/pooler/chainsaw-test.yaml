@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
-# The proxy component becomes a CloudNativePG Pooler (type rw). Clients connect
-# through its Service, which the operator names after the Pooler.
+# The proxy component becomes a CloudNativePG Pooler (type rw). With
+# parameters.readOnly it also creates a type ro Pooler. Turning readOnly off
+# deletes only the ro Pooler; removing the proxy deletes both.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -22,13 +23,17 @@ spec:
               kubectl wait --for=create pooler/pooled-pooler -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=jsonpath='{.status.phase}'=active pooler/pooled-pooler -n "$NAMESPACE" --timeout=180s
               kubectl wait --for=condition=Available deployment/pooled-pooler -n "$NAMESPACE" --timeout=180s
+              # Plain rw pooler only — no readOnly yet.
+              if kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" 2>/dev/null; then
+                echo "read-only pooler should not exist without readOnly"; exit 1
+              fi
       catch:
         - script:
             content: kubectl get instance,cluster,pooler,deploy,pod -n "$NAMESPACE" -o wide
         - script:
-            content: kubectl get pooler/pooled-pooler -n "$NAMESPACE" -o yaml
+            content: kubectl get pooler -n "$NAMESPACE" -o yaml
 
-    - name: connect-through-pooler
+    - name: connect-through-rw-pooler
       try:
         - script:
             timeout: 3m
@@ -45,6 +50,10 @@ spec:
               secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
               test "$host" = "pooled-pooler.$NAMESPACE.svc"
+              # Single replica: host-ro is omitted (no replica endpoints).
+              if kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | grep -q .; then
+                echo "host-ro should be absent with one replica"; exit 1
+              fi
               uri="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.uri}' | base64 -d)"
               case "$uri" in *"@pooled-pooler.$NAMESPACE.svc:5432/app?sslmode=require") ;; *) echo "unexpected uri host/port"; exit 1 ;; esac
               password="$(kubectl get secret pooled-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
@@ -58,7 +67,7 @@ spec:
                 case "$plain" in *"SSL required"*) break ;; esac
                 sleep 2
               done
-              echo "sslmode=disable through the pooler: $plain"
+              echo "sslmode=disable through the rw pooler: $plain"
               case "$plain" in *"SSL required"*) ;; *) exit 1 ;; esac
               for _ in $(seq 1 30); do
                 # text(inet) keeps the netmask (10.0.0.1/32). host() is the address alone.
@@ -67,19 +76,129 @@ spec:
                   -tAc "SELECT host(client_addr) FROM pg_stat_activity WHERE pid = pg_backend_pid()" 2>/dev/null || true)"
                 client="$(printf '%s' "$client" | tr -d '[:space:]')"
                 if [ -n "$client" ] && printf '%s\n' "$ips" | grep -qx "$client"; then
-                  echo "backend client_addr $client is a PgBouncer pod"
+                  echo "backend client_addr $client is a rw PgBouncer pod"
                   exit 0
                 fi
-                echo "waiting for a connection through the pooler (client_addr=${client:-none})"
+                echo "waiting for a connection through the rw pooler (client_addr=${client:-none})"
                 sleep 2
               done
-              echo "pooler pod IPs: $ips"
+              echo "rw pooler pod IPs: $ips"
               exit 1
       catch:
         - script:
             content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
         - script:
-            content: kubectl get pooler,deploy,pod -n "$NAMESPACE" -l cnpg.io/poolerName=pooled-pooler -o yaml
+            content: kubectl get pooler,deploy,pod -n "$NAMESPACE" -o yaml
+
+    - name: enable-readonly-pooler
+      try:
+        - script:
+            timeout: 8m
+            content: |
+              set -eu
+              kubectl patch instance/pooled -n "$NAMESPACE" --type=merge \
+                -p '{"spec":{"components":{"engine":{"replicas":2},"proxy":{"parameters":{"poolMode":"transaction","readOnly":true}}}}}'
+              kubectl wait --for=condition=Ready cluster/pooled -n "$NAMESPACE" --timeout=420s
+              kubectl wait --for=create pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=jsonpath='{.status.phase}'=active pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
+              kubectl wait --for=condition=Available deployment/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=180s
+
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.type}')" = ro
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.cluster.name}')" = pooled
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.poolMode}')" = transaction
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.instances}')" = 1
+              test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.parameters.client_tls_sslmode}')" = require
+
+              secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              for _ in $(seq 1 30); do
+                host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+                [ "$host_ro" = "pooled-pooler-ro.$NAMESPACE.svc" ] && break
+                sleep 2
+              done
+              echo "host-ro with readOnly: $host_ro"
+              test "$host_ro" = "pooled-pooler-ro.$NAMESPACE.svc"
+              # rw pooler and host stay put.
+              test "$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)" = "pooled-pooler.$NAMESPACE.svc"
+              kubectl get pooler pooled-pooler -n "$NAMESPACE" >/dev/null
+      catch:
+        - script:
+            content: kubectl get instance,cluster,pooler,deploy,pod -n "$NAMESPACE" -o wide
+        - script:
+            content: kubectl get pooler -n "$NAMESPACE" -o yaml
+
+    - name: connect-through-ro-pooler
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+              test "$host_ro" = "pooled-pooler-ro.$NAMESPACE.svc"
+              password="$(kubectl get secret pooled-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+              ips="$(kubectl get pods -n "$NAMESPACE" -l cnpg.io/poolerName=pooled-pooler-ro -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}')"
+              test -n "$ips"
+
+              for _ in $(seq 1 30); do
+                plain="$(kubectl exec -n "$NAMESPACE" pooled-1 -c postgres -- env PGPASSWORD="$password" \
+                  psql "host=pooled-pooler-ro user=app dbname=app sslmode=disable" -tAc 'SELECT 1' 2>&1 || true)"
+                case "$plain" in *"SSL required"*) break ;; esac
+                sleep 2
+              done
+              echo "sslmode=disable through the ro pooler: $plain"
+              case "$plain" in *"SSL required"*) ;; *) exit 1 ;; esac
+
+              for _ in $(seq 1 30); do
+                # Connect via host-ro; expect a replica behind the ro pooler.
+                row="$(kubectl exec -n "$NAMESPACE" pooled-1 -c postgres -- env PGPASSWORD="$password" \
+                  psql "host=$host_ro user=app dbname=app sslmode=require" \
+                  -tAc "SELECT host(client_addr), pg_is_in_recovery() FROM pg_stat_activity WHERE pid = pg_backend_pid()" 2>/dev/null || true)"
+                row="$(printf '%s' "$row" | tr -d '[:space:]')"
+                client="${row%|*}"; recovery="${row#*|}"
+                if [ -n "$client" ] && printf '%s\n' "$ips" | grep -qx "$client" && [ "$recovery" = t ]; then
+                  echo "ro backend client_addr $client is a PgBouncer pod (in recovery)"
+                  exit 0
+                fi
+                echo "waiting for a connection through the ro pooler (client_addr=${client:-none} recovery=${recovery:-none})"
+                sleep 2
+              done
+              echo "ro pooler pod IPs: $ips"
+              exit 1
+      catch:
+        - script:
+            content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
+        - script:
+            content: kubectl get pooler,deploy,pod -n "$NAMESPACE" -o yaml
+
+    - name: disable-readonly-pooler
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl patch instance/pooled -n "$NAMESPACE" --type=merge \
+                -p '{"spec":{"components":{"proxy":{"parameters":{"poolMode":"transaction","readOnly":false}}}}}'
+              kubectl wait --for=delete pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=120s
+              # rw pooler must remain.
+              kubectl get pooler pooled-pooler -n "$NAMESPACE" >/dev/null
+              test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.status.phase}')" = active
+
+              secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              for _ in $(seq 1 30); do
+                host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+                [ "$host_ro" = "pooled-ro.$NAMESPACE.svc" ] && break
+                sleep 2
+              done
+              echo "host-ro after turning readOnly off: $host_ro"
+              test "$host_ro" = "pooled-ro.$NAMESPACE.svc"
+              test "$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)" = "pooled-pooler.$NAMESPACE.svc"
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
+      catch:
+        - script:
+            content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
+        - script:
+            content: kubectl get pooler,deploy -n "$NAMESPACE" -o yaml
 
     - name: remove-proxy
       try:
@@ -90,6 +209,10 @@ spec:
               kubectl patch instance/pooled -n "$NAMESPACE" --type=json \
                 -p '[{"op":"remove","path":"/spec/components/proxy"}]'
               kubectl wait --for=delete pooler/pooled-pooler -n "$NAMESPACE" --timeout=120s
+              # ro was already deleted when readOnly was turned off.
+              if kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" 2>/dev/null; then
+                echo "read-only pooler should stay deleted"; exit 1
+              fi
               secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               for _ in $(seq 1 30); do
                 host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
@@ -98,6 +221,8 @@ spec:
               done
               echo "host after removing the proxy: $host"
               test "$host" = "pooled-rw.$NAMESPACE.svc"
+              host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
+              test "$host_ro" = "pooled-ro.$NAMESPACE.svc"
               kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
       catch:
         - script:
