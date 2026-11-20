@@ -48,6 +48,7 @@ manages pods directly — all lifecycle work is delegated to the operator.
 | provider-cloudnative-pg | OpenEverest | CloudNativePG | Kubernetes |
 |---|---|---|---|
 | `0.2.x` | `2.0.0-dev.2` | `1.29.x` | `1.30` – `1.34` |
+| `0.4.x` | `2.0.0-alpha.1` | `1.30.x` | `1.34` – `1.36` |
 | `main` | `2.0.0-alpha.1` (Instance status as conditions, openeverest/openeverest#3652) | `1.30.x` | `1.34` – `1.36` |
 
 ## Capabilities

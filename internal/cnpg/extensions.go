@@ -268,8 +268,8 @@ func ValidateExtensions(custom *components.CNPGCustomSpec, engineVersion, instan
 	for _, ext := range enabled {
 		if ext.catalogEntry != "" && major != imageVolumePostgresMajor {
 			return fmt.Errorf(
-				"extensions.%s requires PostgreSQL 18 (got major %q); set spec.version to a 18.x release (e.g. \"18.4\"); also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
-				ext.field, major,
+				"extensions.%s requires PostgreSQL 18 (got major %q); set spec.version to a 18.x release (e.g. %q); also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
+				ext.field, major, common.PostgresDefaultVersion,
 			)
 		}
 		if ext.minPostgresVersion != "" && !versionAtLeast(version, ext.minPostgresVersion) {
