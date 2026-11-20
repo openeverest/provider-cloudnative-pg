@@ -1,13 +1,18 @@
-# Instance with CloudNativePG managed Services customized via engine parameters.
+# Instance with first-class engine.service exposure.
 #
 # Connection Secret keys (see README "Connection details"):
-#   host      — read-write Service (<instance>-rw), or the pooler when proxy is set
+#   host      — read-write Service (<instance>-rw), or the LoadBalancer address
+#               when serviceType is LoadBalancer (once assigned); or the pooler
+#               when proxy is set
 #   host-r    — every ready instance (<instance>-r); omitted if "r" is disabled
 #   host-ro   — ready replicas only (<instance>-ro); needs replicas >= 2 and
 #               "ro" not disabled
 #
-# This example keeps the default ClusterIP Services and adds a LoadBalancer in
-# front of the primary (rw). Adjust annotations for your cloud provider.
+# Prefer engine.service over parameters.managed.services.additional. Adjust
+# annotations for your cloud provider. Set sourceRanges on LoadBalancer so the
+# LB is not open to the world (CIDRs or bare IPs). TLS: the published host is
+# the LB address; CNPG cert SANs are the in-cluster Service DNS names — see
+# README "Service exposure".
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:
@@ -29,18 +34,10 @@ spec:
           memory: 1Gi
       storage:
         size: 5Gi
-      parameters:
-        managed:
-          services:
-            # Optional: drop a default Service. Valid values: r, ro (not rw).
-            # disabledDefaultServices:
-            #   - ro
-            additional:
-              - selectorType: rw
-                serviceTemplate:
-                  metadata:
-                    name: my-database-rw-lb
-                    annotations:
-                      service.beta.kubernetes.io/aws-load-balancer-type: nlb
-                  spec:
-                    type: LoadBalancer
+      service:
+        serviceType: LoadBalancer
+        annotations:
+          service.beta.kubernetes.io/aws-load-balancer-type: nlb
+        loadBalancerService:
+          sourceRanges:
+            - 10.0.0.0/8
