@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -21,6 +22,39 @@ import (
 )
 
 var on = &components.ExtensionToggle{Enabled: true}
+
+func TestExtensionRestartWarningsPgStatStatements(t *testing.T) {
+	path := field.NewPath("extensions")
+	unset := withExtensions(components.ExtensionsSpec{})
+	tests := []struct {
+		name         string
+		old, updated *components.CNPGCustomSpec
+		want         []string
+	}{
+		{
+			name:    "disabled while unset, which is on by default",
+			old:     unset,
+			updated: withExtensions(components.ExtensionsSpec{PgStatStatements: off}),
+			want:    []string{"extensions.pgStatStatements.enabled: Disabling pgStatStatements restarts the instances"},
+		},
+		{name: "unset on both sides", old: nil, updated: unset},
+		{name: "set on explicitly from unset", old: unset, updated: withExtensions(components.ExtensionsSpec{PgStatStatements: on})},
+		{name: "unset again after off keeps it off", old: withExtensions(components.ExtensionsSpec{PgStatStatements: off}), updated: unset},
+		{
+			name:    "enabled again",
+			old:     withExtensions(components.ExtensionsSpec{PgStatStatements: off}),
+			updated: withExtensions(components.ExtensionsSpec{PgStatStatements: on}),
+			want:    []string{"extensions.pgStatStatements.enabled: Enabling pgStatStatements restarts the instances"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtensionRestartWarnings(tt.old, tt.updated, path); !slices.Equal(got, tt.want) {
+				t.Errorf("warnings = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func withExtensions(extensions components.ExtensionsSpec) *components.CNPGCustomSpec {
 	return &components.CNPGCustomSpec{Extensions: &extensions}
