@@ -17,7 +17,7 @@ import (
 )
 
 // Image volumes need extension_control_path, added in PostgreSQL 18.
-const imageVolumePostgresMajor = "18"
+const imageVolumeMinPostgresMajor = 18
 
 // SQLVersionAnnotationPrefix keys, on the extensions ClusterImageCatalog, the
 // CREATE EXTENSION version of each image as <prefix><major>.<extension name>;
@@ -61,6 +61,9 @@ type extension struct {
 	// extension image runs on, when its binaries need a newer minor than the
 	// image-volume major alone guarantees.
 	minPostgresVersion string
+	// maxPostgresVersion is the first unsupported release (exclusive), used
+	// for images compiled for an exact PostgreSQL minor range.
+	maxPostgresVersion string
 	preloadLibraries   []string
 	// defaultParameters apply unless set in parameters.postgresql.parameters.
 	defaultParameters map[string]string
@@ -84,12 +87,14 @@ type extension struct {
 // Ordered so that dependencies are created first (postgis before pgrouting).
 var firstClassExtensions = []extension{
 	{
-		field:            "timescaledb",
-		toggle:           func(e *components.ExtensionsSpec) *components.ExtensionToggle { return e.TimescaleDB },
-		catalogEntry:     "timescaledb-oss",
-		sqlExtension:     "timescaledb",
-		preloadLibraries: []string{"timescaledb"},
-		conflicts:        []string{"timescaledbCommunity"},
+		field:              "timescaledb",
+		toggle:             func(e *components.ExtensionsSpec) *components.ExtensionToggle { return e.TimescaleDB },
+		catalogEntry:       "timescaledb-oss",
+		sqlExtension:       "timescaledb",
+		minPostgresVersion: "18.6",
+		maxPostgresVersion: "18.8",
+		preloadLibraries:   []string{"timescaledb"},
+		conflicts:          []string{"timescaledbCommunity"},
 		// From the upstream timescaledb-oss Cluster example.
 		defaultParameters: map[string]string{
 			"timescaledb.telemetry_level": "off",
@@ -104,6 +109,7 @@ var firstClassExtensions = []extension{
 		// Timescale builds the TSL library against the latest minor; 2.30+
 		// calls visibilitymap_clear_locked, which PostgreSQL added in 18.6.
 		minPostgresVersion: "18.6",
+		maxPostgresVersion: "18.8",
 		preloadLibraries:   []string{"timescaledb"},
 		conflicts:          []string{"timescaledb"},
 		defaultParameters: map[string]string{
@@ -255,7 +261,7 @@ func enabledExtensions(custom *components.CNPGCustomSpec) []extension {
 	return enabled
 }
 
-// ValidateExtensions checks that image-volume extensions run on PostgreSQL 18
+// ValidateExtensions checks that image-volume extensions run on PostgreSQL 18+
 // (and their minimum minor), that dependencies are enabled too, that no
 // conflicting extensions are enabled together, and that parameters naming the
 // extension's database point to the application database. ImageVolume support
@@ -264,16 +270,23 @@ func enabledExtensions(custom *components.CNPGCustomSpec) []extension {
 func ValidateExtensions(custom *components.CNPGCustomSpec, engineVersion, instanceVersion string) error {
 	version := postgresVersion(engineVersion, instanceVersion)
 	major := postgresMajor(engineVersion, instanceVersion)
+	majorNumber, majorErr := strconv.Atoi(major)
+	if majorErr != nil {
+		return fmt.Errorf("invalid PostgreSQL major %q: %w", major, majorErr)
+	}
 	enabled := enabledExtensions(custom)
 	for _, ext := range enabled {
-		if ext.catalogEntry != "" && major != imageVolumePostgresMajor {
+		if ext.catalogEntry != "" && majorNumber < imageVolumeMinPostgresMajor {
 			return fmt.Errorf(
-				"extensions.%s requires PostgreSQL 18 (got major %q); set spec.version to a 18.x release (e.g. \"18.4\"); also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
+				"extensions.%s requires PostgreSQL 18 or later (got major %q); set spec.version to a supported 18.x release; also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
 				ext.field, major,
 			)
 		}
 		if ext.minPostgresVersion != "" && !versionAtLeast(version, ext.minPostgresVersion) {
 			return fmt.Errorf("extensions.%s requires PostgreSQL %s or later (got %q)", ext.field, ext.minPostgresVersion, version)
+		}
+		if ext.maxPostgresVersion != "" && versionAtLeast(version, ext.maxPostgresVersion) {
+			return fmt.Errorf("extensions.%s requires PostgreSQL earlier than %s (got %q)", ext.field, ext.maxPostgresVersion, version)
 		}
 		for _, required := range ext.requires {
 			if !slices.ContainsFunc(enabled, func(e extension) bool { return e.field == required }) {

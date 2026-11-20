@@ -81,7 +81,8 @@ func TestValidateExtensions(t *testing.T) {
 		wantErr         bool
 	}{
 		{name: "none enabled on PG 17", engineVersion: "17.10"},
-		{name: "image volume on PG 18", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "18.4"},
+		{name: "image volume on PG 18", custom: withExtensions(components.ExtensionsSpec{PostGIS: on}), engineVersion: "18.4"},
+		{name: "image volume on PG 19", custom: withExtensions(components.ExtensionsSpec{PgCron: on}), engineVersion: "19.0"},
 		{name: "image volume on PG 18 from spec.version", custom: withExtensions(components.ExtensionsSpec{PostGIS: on}), instanceVersion: "18.4"},
 		{name: "image volume on PG 17", custom: withExtensions(components.ExtensionsSpec{PgIVM: on}), engineVersion: "17.10", wantErr: true},
 		{name: "image volume on the default version (PG 18)", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on})},
@@ -90,7 +91,12 @@ func TestValidateExtensions(t *testing.T) {
 		{name: "pgrouting with postgis", custom: withExtensions(components.ExtensionsSpec{PostGIS: on, PgRouting: on}), engineVersion: "18.4"},
 		{name: "pgrouting without postgis", custom: withExtensions(components.ExtensionsSpec{PgRouting: on}), engineVersion: "18.4", wantErr: true},
 		{name: "timescaledb community on PG 18.6", custom: withExtensions(components.ExtensionsSpec{TimescaleDBCommunity: on}), engineVersion: "18.6"},
-		{name: "timescaledb community on PG 18.10", custom: withExtensions(components.ExtensionsSpec{TimescaleDBCommunity: on}), engineVersion: "18.10"},
+		{name: "timescaledb community on PG 18.10", custom: withExtensions(components.ExtensionsSpec{TimescaleDBCommunity: on}), engineVersion: "18.10", wantErr: true},
+		{name: "timescaledb oss on PG 18.6", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "18.6"},
+		{name: "timescaledb oss on PG 18.7", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "18.7"},
+		{name: "timescaledb oss on PG 18.8", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "18.8", wantErr: true},
+		{name: "timescaledb oss on PG 19", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "19.0", wantErr: true},
+		{name: "timescaledb oss on PG 18.4", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on}), engineVersion: "18.4", wantErr: true},
 		{name: "timescaledb community on PG 18.6 from spec.version", custom: withExtensions(components.ExtensionsSpec{TimescaleDBCommunity: on}), instanceVersion: "18.6"},
 		{name: "timescaledb community on PG 18.4", custom: withExtensions(components.ExtensionsSpec{TimescaleDBCommunity: on}), engineVersion: "18.4", wantErr: true},
 		{name: "both timescaledb editions", custom: withExtensions(components.ExtensionsSpec{TimescaleDB: on, TimescaleDBCommunity: on}), engineVersion: "18.6", wantErr: true},
@@ -421,6 +427,7 @@ func TestResolveExtensionImages(t *testing.T) {
 				ExtensionAnnotationPrefix + "18.pg-repack-a":       "pg-repack",
 				ExtensionAnnotationPrefix + "18.pg-repack-b":       "pg-repack",
 				MaxVersionAnnotationPrefix + "18.pg-repack-b":      "18.7",
+				SQLVersionAnnotationPrefix + "19.pg-cron":          "1.6",
 			},
 		},
 		Spec: cnpgv1.ImageCatalogSpec{Images: []cnpgv1.CatalogImage{
@@ -432,6 +439,9 @@ func TestResolveExtensionImages(t *testing.T) {
 				{Name: "pg-cron-pre-18-7", ImageVolumeSource: corev1.ImageVolumeSource{Reference: "registry.example/pg-cron:old"}},
 				{Name: "pg-repack-a"},
 				{Name: "pg-repack-b"},
+			}},
+			{Major: 19, Image: "pg:19", Extensions: []cnpgv1.ExtensionConfiguration{
+				{Name: "pg-cron", ImageVolumeSource: corev1.ImageVolumeSource{Reference: "registry.example/pg-cron:19"}},
 			}},
 		}},
 	}
@@ -467,6 +477,10 @@ func TestResolveExtensionImages(t *testing.T) {
 		{
 			name: "minimum compares numerically", custom: withExtensions(components.ExtensionsSpec{PgCron: on}),
 			version: "18.10", want: ExtensionImages{"pg-cron": {Config: cron("registry.example/pg-cron:new"), SQLVersion: "1.6"}},
+		},
+		{
+			name: "PostgreSQL 19 build", custom: withExtensions(components.ExtensionsSpec{PgCron: on}),
+			version: "19.0", want: ExtensionImages{"pg-cron": {Config: cron("registry.example/pg-cron:19"), SQLVersion: "1.6"}},
 		},
 		{name: "overlapping entries", custom: withExtensions(components.ExtensionsSpec{PgRepack: on}), version: "18.6", wantErr: true},
 		{

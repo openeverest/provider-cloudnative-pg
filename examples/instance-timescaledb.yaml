@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   1. OpenEverest CRDs + this provider installed
-#   2. PostgreSQL 18.x (timescaledb-oss image is published for PG 18 only)
+#   2. PostgreSQL 18.6 or 18.7 (the image is compiled for the exact minor)
 #   3. Kubernetes ImageVolume support:
 #        - Kubernetes 1.35+, or
 #        - 1.33 / 1.34 with the ImageVolume feature gate enabled
@@ -12,11 +12,11 @@ metadata:
   name: my-timescaledb
 spec:
   provider: provider-cloudnative-pg
-  version: "18.4"
+  version: "18.7"
   components:
     engine:
       type: postgresql
-      version: "18.4"
+      version: "18.7"
       replicas: 1
       resources:
         requests:
