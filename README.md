@@ -79,7 +79,7 @@ provider itself is covered under [Installation](#installation).
 First-class toggles under `spec.components.engine.parameters.extensions.<name>.enabled`. The
 provider runs `CREATE EXTENSION` for each enabled one in the application database through a
 single CNPG `Database` resource (`<instance>-extensions`). Extensions not in the `standard`
-operand images are mounted as image volumes: these need PostgreSQL **18** and Kubernetes
+operand images are mounted as image volumes: these need PostgreSQL **18+** and Kubernetes
 ImageVolume (1.35+, or 1.33/1.34 + feature gate), and adding one restarts the instances.
 
 The image-volume images come from a CloudNativePG `ClusterImageCatalog` that the chart renders
@@ -115,10 +115,10 @@ annotations.
 
 | Extension | Toggle | Status | Enable on a running instance | Disable | Notes |
 |---|---|---|---|---|---|
-| pgvector | `pgvector` | ✅ | ✅ no restart | ❌ | PG 14–18, bundled in the `standard` images: no image change. See [examples/instance-pgvector.yaml](examples/instance-pgvector.yaml) |
-| pgAudit | `pgaudit` | ✅ | ✅ restarts | ✅ the operator drops it | PG 14–18, bundled; sets `pgaudit.log: "ddl, role"` unless a value is set in `postgresql.parameters`, and the operator then preloads it and creates it in every database |
-| pg_stat_statements | `pgStatStatements` | ✅ on by default | ✅ restarts | ✅ restarts, the operator drops it | PG 14–18, bundled; on for new instances and exported as metrics. See [Query statistics](#query-statistics) |
-| TimescaleDB OSS | `timescaledb` | ✅ | ❌ creation only ¹ | ❌ | Image volume, preloaded. See [examples/instance-timescaledb.yaml](examples/instance-timescaledb.yaml) |
+| pgvector | `pgvector` | ✅ | ✅ no restart | ❌ | PG 14–19, bundled in the `standard` images: no image change. See [examples/instance-pgvector.yaml](examples/instance-pgvector.yaml) |
+| pgAudit | `pgaudit` | ✅ | ✅ restarts | ✅ the operator drops it | PG 14–19, bundled; sets `pgaudit.log: "ddl, role"` unless a value is set in `postgresql.parameters`, and the operator then preloads it and creates it in every database |
+| pg_stat_statements | `pgStatStatements` | ✅ on by default | ✅ restarts | ✅ restarts, the operator drops it | PG 14–19, bundled; on for new instances and exported as metrics. See [Query statistics](#query-statistics) |
+| TimescaleDB OSS | `timescaledb` | ✅ | ❌ creation only ¹ | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded; PostgreSQL **18.6–18.7**. See [examples/instance-timescaledb.yaml](examples/instance-timescaledb.yaml) |
 | TimescaleDB Community ³ | `timescaledbCommunity` | ✅ | ❌ creation only ¹ | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded; PostgreSQL **18.6+**; not together with `timescaledb`. See [examples/instance-timescaledb-community.yaml](examples/instance-timescaledb-community.yaml) |
 | PostGIS | `postgis` | ✅ | ✅ restarts | ❌ | Image volume |
 | pgRouting | `pgrouting` | ✅ | ✅ restarts | ❌ | Image volume; requires `postgis` |
@@ -148,9 +148,10 @@ it.
 columnstore compression, continuous aggregates, and compression, retention and refresh policies.
 The TSL is **not** open source: use it only for internal use or if you hold a license from
 Timescale. It prohibits offering TimescaleDB to third parties as a database service. Enabling the
-toggle is your acceptance of the TSL; the provider itself remains Apache-2.0. Timescale builds
-these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later. The
-editions use different binaries, so an instance cannot switch between them.
+toggle is your acceptance of the TSL; the provider itself remains Apache-2.0. TimescaleDB
+2.32.1 is built separately against PostgreSQL 18.6 and 18.7, and the provider selects the
+matching catalog range. The editions use different binaries, so an instance cannot switch
+between them.
 
 #### pg_cron
 
