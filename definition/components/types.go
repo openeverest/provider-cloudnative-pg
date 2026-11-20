@@ -45,20 +45,56 @@ type CNPGCustomSpec struct {
 	// CNPG's native storage configuration. Once enabled it cannot be removed.
 	WALStorage *cnpgv1.StorageConfiguration `json:"walStorage,omitempty"`
 
+	// ResizeInUseVolumes lets CNPG grow the data volumes of running instances
+	// when the engine's storage size increases; the StorageClass must allow
+	// volume expansion. Unset keeps CNPG's default, true.
 	ResizeInUseVolumes *bool `json:"resizeInUseVolumes,omitempty"`
 
+	// PVCTemplate is the template of the data volumes' PersistentVolumeClaims
+	// (CNPG storage.pvcTemplate), for settings the Instance doesn't have, such
+	// as accessModes or volumeAttributesClassName. The engine's storage size
+	// and storageClass take precedence over the template's.
 	PersistentVolumeClaimTemplate *corev1.PersistentVolumeClaimSpec `json:"pvcTemplate,omitempty"`
 
+	// Affinity is CNPG's scheduling configuration of the instance pods:
+	// anti-affinity between instances, node selector, tolerations and
+	// additional affinity rules. Cannot be combined with the engine's
+	// schedulingPolicy affinity, nodeSelector or tolerations, which also set it.
 	Affinity *cnpgv1.AffinityConfiguration `json:"affinity,omitempty"`
 
+	// PostgreSQL is CNPG's PostgreSQL configuration: parameters
+	// (postgresql.conf), pg_hba and pg_ident records, synchronous
+	// replication, shared_preload_libraries, LDAP and more. CNPG manages a
+	// fixed set of parameters itself and rejects them here. The provider adds
+	// the records of requireTLS and pgHBA, the parameters and libraries of
+	// enabled extensions and replication slot settings. pg_hba cannot be
+	// combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
+	// for parameters that need it.
 	PostgresConfiguration *cnpgv1.PostgresConfiguration `json:"postgresql,omitempty"`
 
+	// Managed is CNPG's declarative management of PostgreSQL roles
+	// (managed.roles) and of the instance's Services (managed.services). The
+	// Instance is Provisioning until CNPG has reconciled every role, and
+	// Failed while one cannot be.
 	Managed *cnpgv1.ManagedConfiguration `json:"managed,omitempty"`
 
+	// Bootstrap sets how a new instance is initialized. Only read at
+	// creation, and ignored when the Instance restores a backup
+	// (spec.dataSource).
 	Bootstrap *BootstrapConfiguration `json:"bootstrap,omitempty"`
 
+	// Certificates are the TLS certificates of the instance (CNPG
+	// certificates). Without them CNPG issues and rotates its own.
+	// serverTLSSecret needs serverCASecret and cannot be combined with
+	// serverAltDNSNames; replicationTLSSecret needs clientCASecret.
 	Certificates *cnpgv1.CertificatesConfiguration `json:"certificates,omitempty"`
 
+	// Monitoring configures CNPG's metrics exporter on port 9187 of every
+	// instance pod: custom queries, the default queries, TLS and relabeling.
+	// The provider adds the queries of pg_stat_statements when that extension
+	// is enabled. To have the Prometheus Operator scrape the instance, use
+	// spec.topology.parameters.monitoring.prometheus instead of the deprecated
+	// enablePodMonitor, which cannot be combined with it.
 	Monitoring *cnpgv1.MonitoringConfiguration `json:"monitoring,omitempty"`
 
 	// ReplicationSlots configures CNPG replication slots: the physical slots of
@@ -157,10 +193,18 @@ type ExtensionsSpec struct {
 
 // ExtensionToggle switches a first-class extension on.
 type ExtensionToggle struct {
+	// Enabled turns the extension on. Whether it can be turned off again,
+	// or only enabled at creation, depends on the extension.
 	Enabled bool `json:"enabled"`
 }
 
+// BootstrapConfiguration sets how a new instance is initialized: an empty
+// database (initdb) or a VolumeSnapshot of another instance.
 type BootstrapConfiguration struct {
+	// InitDB is CNPG's initdb bootstrap: the application database and its
+	// owner (both CNPG's default, app, when unset; set both or neither), the
+	// Secret with the owner's password, locale and encoding, and SQL to run
+	// after initialization.
 	InitDB *cnpgv1.BootstrapInitDB `json:"initdb,omitempty"`
 	// VolumeSnapshot starts the instance from a VolumeSnapshot of another
 	// instance's data volume, in the same namespace, instead of an empty
@@ -175,6 +219,7 @@ type BootstrapConfiguration struct {
 
 // VolumeSnapshotSource names a VolumeSnapshot in the Instance's namespace.
 type VolumeSnapshotSource struct {
+	// Name of the VolumeSnapshot.
 	Name string `json:"name"`
 }
 

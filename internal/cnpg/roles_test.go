@@ -1,23 +1,20 @@
 package cnpg
 
 import (
-	"strings"
 	"testing"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
-	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 )
 
-func TestManagedRolesStatus(t *testing.T) {
+func TestManagedRoles(t *testing.T) {
 	role := func(name string) cnpgv1.RoleConfiguration {
 		return cnpgv1.RoleConfiguration{Name: name}
 	}
 	tests := []struct {
 		name        string
 		pg          *cnpgv1.Cluster
-		wantBlocked bool
-		wantPhase   corev1alpha1.InstancePhase
-		wantMsg     string
+		wantFailure string
+		wantWaiting string
 	}{
 		{
 			name: "no managed roles",
@@ -58,12 +55,10 @@ func TestManagedRolesStatus(t *testing.T) {
 					},
 				},
 			},
-			wantBlocked: true,
-			wantPhase:   corev1alpha1.InstancePhaseProvisioning,
-			wantMsg:     "waiting for managed PostgreSQL roles to be reconciled: ro",
+			wantWaiting: "Waiting for managed PostgreSQL roles to be reconciled: ro",
 		},
 		{
-			name: "cannot reconcile is Failed",
+			name: "cannot reconcile is a failure, sorted by role",
 			pg: &cnpgv1.Cluster{
 				Spec: cnpgv1.ClusterSpec{
 					Managed: &cnpgv1.ManagedConfiguration{Roles: []cnpgv1.RoleConfiguration{role("app")}},
@@ -71,30 +66,24 @@ func TestManagedRolesStatus(t *testing.T) {
 				Status: cnpgv1.ClusterStatus{
 					ManagedRolesStatus: cnpgv1.ManagedRoles{
 						CannotReconcile: map[string][]string{
+							"ro":  {"permission denied"},
 							"app": {"role owns objects"},
 						},
 					},
 				},
 			},
-			wantBlocked: true,
-			wantPhase:   corev1alpha1.InstancePhaseFailed,
-			wantMsg:     `managed PostgreSQL role "app" cannot be reconciled: role owns objects`,
+			wantFailure: `managed PostgreSQL role "app" cannot be reconciled: role owns objects` + "\n" +
+				`managed PostgreSQL role "ro" cannot be reconciled: permission denied`,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, blocked := ManagedRolesStatus(tt.pg)
-			if blocked != tt.wantBlocked {
-				t.Fatalf("blocked = %v, want %v (status: %+v)", blocked, tt.wantBlocked, got)
+			failure, waiting := ManagedRoles(tt.pg)
+			if failure != tt.wantFailure {
+				t.Fatalf("failure = %q, want %q", failure, tt.wantFailure)
 			}
-			if !tt.wantBlocked {
-				return
-			}
-			if got.Phase != tt.wantPhase {
-				t.Fatalf("phase = %q, want %q", got.Phase, tt.wantPhase)
-			}
-			if !strings.Contains(got.Message, tt.wantMsg) {
-				t.Fatalf("message = %q, want substring %q", got.Message, tt.wantMsg)
+			if waiting != tt.wantWaiting {
+				t.Fatalf("waiting = %q, want %q", waiting, tt.wantWaiting)
 			}
 		})
 	}

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	barmanapi "github.com/cloudnative-pg/barman-cloud/pkg/api"
 	barmancommand "github.com/cloudnative-pg/barman-cloud/pkg/command"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	machineryapi "github.com/cloudnative-pg/machinery/pkg/api"
-	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
@@ -47,23 +47,15 @@ func (p *Provider) deleteBackupData(
 		return true, nil
 	}
 
-	objectStore := &barmancloudv1.ObjectStore{}
-	if err := c.Get(objectStore, backup.Spec.StorageRef.Name); err != nil {
-		return false, fmt.Errorf("get ObjectStore %q for data deletion: %w", backup.Spec.StorageRef.Name, err)
-	}
-	backupStorage, err := c.BackupStorage(backup.Spec.StorageRef.Name)
-	if err != nil {
-		return false, fmt.Errorf("get BackupStorage %q for data deletion: %w", backup.Spec.StorageRef.Name, err)
-	}
-	if backupStorage.Spec.S3 == nil {
-		return false, fmt.Errorf("BackupStorage %q is not S3; cannot delete Barman backup data", backupStorage.Name)
-	}
-
 	jobName := backupDeletionJobName(backup.Name)
 	job := &batchv1.Job{}
-	err = c.Get(job, jobName)
+	err := c.Get(job, jobName)
 	if apierrors.IsNotFound(err) {
-		job, err = buildBackupDeletionJob(backup, cnpgBackup, objectStore, backupStorage.Spec.S3)
+		config, region, err := deletionStorage(c, backup, cnpgBackup)
+		if err != nil {
+			return false, err
+		}
+		job, err = buildBackupDeletionJob(backup, cnpgBackup, config, region)
 		if err != nil {
 			return false, err
 		}
@@ -84,6 +76,32 @@ func (p *Provider) deleteBackupData(
 	return deletionJobDone(job)
 }
 
+// deletionStorage renders the connection to the storage holding cnpgBackup's
+// data, and its region.
+func deletionStorage(
+	c *controller.Context,
+	backup *backupv1alpha1.Backup,
+	cnpgBackup *cnpgv1.Backup,
+) (barmanapi.BarmanObjectStoreConfiguration, string, error) {
+	backupStorage, err := c.BackupStorage(backup.Spec.StorageRef.Name)
+	if err != nil {
+		return barmanapi.BarmanObjectStoreConfiguration{}, "", fmt.Errorf("get BackupStorage %q for data deletion: %w", backup.Spec.StorageRef.Name, err)
+	}
+	destination := cnpgBackup.Status.DestinationPath
+	if destination == "" {
+		destination = barman.DestinationPath(backupStorage, c.BackupLocation(backup, backupStorage))
+	}
+	config, err := barman.ObjectStoreConfiguration(c, backupStorage, destination)
+	if err != nil {
+		return barmanapi.BarmanObjectStoreConfiguration{}, "", fmt.Errorf("render BackupStorage %q for data deletion: %w", backupStorage.Name, err)
+	}
+	s3, _, err := c.BackupStorageS3(backupStorage)
+	if err != nil {
+		return barmanapi.BarmanObjectStoreConfiguration{}, "", fmt.Errorf("decode BackupStorage %q for data deletion: %w", backupStorage.Name, err)
+	}
+	return config, s3.Region, nil
+}
+
 func deletionJobDone(job *batchv1.Job) (bool, error) {
 	if jobFailed(job) {
 		return false, fmt.Errorf("backup data deletion Job %q failed; inspect its logs, then delete the Job to retry", job.Name)
@@ -91,19 +109,17 @@ func deletionJobDone(job *batchv1.Job) (bool, error) {
 	return jobComplete(job), nil
 }
 
+// buildBackupDeletionJob builds the Job deleting cnpgBackup's data from the
+// storage config connects to.
 func buildBackupDeletionJob(
 	backup *backupv1alpha1.Backup,
 	cnpgBackup *cnpgv1.Backup,
-	objectStore *barmancloudv1.ObjectStore,
-	s3 *backupv1alpha1.BackupStorageS3Spec,
+	config barmanapi.BarmanObjectStoreConfiguration,
+	region string,
 ) (*batchv1.Job, error) {
-	if s3 == nil {
-		return nil, fmt.Errorf("BackupStorage %q is not S3; cannot delete Barman backup data", backup.Spec.StorageRef.Name)
-	}
-	config := objectStore.Spec.Configuration
 	aws := config.AWS
 	if aws == nil || aws.AccessKeyIDReference == nil || aws.SecretAccessKeyReference == nil {
-		return nil, fmt.Errorf("ObjectStore %q has incomplete S3 credentials; cannot delete Barman backup data", objectStore.Name)
+		return nil, fmt.Errorf("BackupStorage %q has incomplete S3 credentials; cannot delete Barman backup data", backup.Spec.StorageRef.Name)
 	}
 	if cnpgBackup.Status.BackupID == "" {
 		return nil, fmt.Errorf("CloudNativePG backup %q has no Barman backup ID", cnpgBackup.Name)
@@ -135,7 +151,7 @@ func buildBackupDeletionJob(
 		&config,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("build Barman delete options for ObjectStore %q: %w", objectStore.Name, err)
+		return nil, fmt.Errorf("build Barman delete options for BackupStorage %q: %w", backup.Spec.StorageRef.Name, err)
 	}
 	args = append(args, "--backup-id", cnpgBackup.Status.BackupID, destination, serverName)
 
@@ -146,10 +162,10 @@ func buildBackupDeletionJob(
 	if aws.RegionReference != nil {
 		env = append(env, secretEnv("AWS_REGION", aws.RegionReference))
 		env = append(env, secretEnv("AWS_DEFAULT_REGION", aws.RegionReference))
-	} else if s3.Region != "" {
+	} else if region != "" {
 		env = append(env,
-			corev1.EnvVar{Name: "AWS_REGION", Value: s3.Region},
-			corev1.EnvVar{Name: "AWS_DEFAULT_REGION", Value: s3.Region},
+			corev1.EnvVar{Name: "AWS_REGION", Value: region},
+			corev1.EnvVar{Name: "AWS_DEFAULT_REGION", Value: region},
 		)
 	}
 

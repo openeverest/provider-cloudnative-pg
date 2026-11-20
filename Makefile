@@ -39,6 +39,13 @@ OPENEVEREST_HELM_REPO ?= https://openeverest.github.io/helm-charts/
 OPENEVEREST_GO_VERSION := $(shell go list -m -f '{{.Version}}' github.com/openeverest/openeverest/v2 2>/dev/null | sed 's/^v//')
 OPENEVEREST_LATEST_RELEASE ?= 2.0.0-dev.4
 OPENEVEREST_CHART_VERSION ?= $(if $(shell echo '$(OPENEVEREST_GO_VERSION)' | grep -E '[0-9]{14}-[0-9a-f]{12}$$'),$(OPENEVEREST_LATEST_RELEASE),$(OPENEVEREST_GO_VERSION))
+# Until the next core release, run core main instead of the released chart:
+# the openeverest/helm-charts chart at this ref (a branch or tag) and the image
+# core's CI publishes from main (amd64 only). Empty installs the released
+# OPENEVEREST_CHART_VERSION.
+OPENEVEREST_CHARTS_REF ?= main
+OPENEVEREST_CHARTS_DIR ?= $(LOCALBIN)/helm-charts
+OPENEVEREST_MAIN_IMAGE ?= ghcr.io/openeverest/openeverest-dev:0.0.0
 EVEREST_NAMESPACE ?= everest-system
 EVEREST_ADMIN_PASSWORD ?= admin
 
@@ -91,18 +98,18 @@ helm-sync-rbac: yq ## Sync generated RBAC rules into the Helm chart.
 	@echo "Done."
 
 .PHONY: generate
-generate: manifests helm-sync-rbac ## Run all code generation (RBAC + Helm sync + provider spec from definition/).
+generate: manifests helm-sync-rbac ## Run all code generation (RBAC + Helm sync + provider spec and docs/reference.md from definition/).
 	go generate ./...
 	@echo "All generation complete."
 
 .PHONY: verify
 verify: ## Verify that generated files are up-to-date (for CI).
 	@$(MAKE) generate
-	@if git diff --quiet -- config/ $(CHART_DIR)/generated/; then \
+	@if git diff --quiet -- config/ definition/ $(CHART_DIR)/generated/ docs/ && [ -z "$$(git ls-files --others --exclude-standard -- docs/)" ]; then \
 		echo "Generated files are up-to-date."; \
 	else \
 		echo "ERROR: Generated files are out of date. Run 'make generate' and commit the changes."; \
-		git diff -- config/ $(CHART_DIR)/generated/; \
+		git diff -- config/ definition/ $(CHART_DIR)/generated/ docs/; \
 		exit 1; \
 	fi
 
@@ -162,13 +169,13 @@ test-integration-wal: ## Run separate WAL volume tests (needs jq; physical expan
 test-integration-core: ## Run core integration tests (chainsaw).
 	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/core
 
-.PHONY: test-integration-backup
-test-integration-backup: ## Run backup integration tests (requires CNPG, the Barman plugin, and BackupClasses).
-	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/backup
-
 .PHONY: test-integration-core-admission
 test-integration-core-admission: ## Run the admission webhook integration test (scales the provider down; not concurrent).
 	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/core/admission
+
+.PHONY: test-integration-presets
+test-integration-presets: ## Run the ClusterInstancePreset integration test (needs jq).
+	. ./test/vars.sh && chainsaw test --config ./test/integration/.chainsaw.yaml ./test/integration/presets
 
 .PHONY: test-integration-core-replicaset
 test-integration-core-replicaset: ## Run core replicaset integration tests (chainsaw).
@@ -186,6 +193,10 @@ test-integration-imagevolume: ## Run the image-volume extensions integration tes
 test-e2e-cluster: ## Run e2e-cluster suites (chainsaw) against OpenEverest core and this provider (see `make install-openeverest`).
 	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster
 
+.PHONY: test-e2e-cluster-backup
+test-e2e-cluster-backup: ## Run the scheduled and on-demand backup e2e-cluster suite against S3Mock.
+	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster/backup
+
 .PHONY: test-e2e-cluster-backup-deletion
 test-e2e-cluster-backup-deletion: ## Run the backup retention and deletion e2e-cluster suite.
 	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster/backup-deletion
@@ -193,6 +204,10 @@ test-e2e-cluster-backup-deletion: ## Run the backup retention and deletion e2e-c
 .PHONY: test-e2e-cluster-backup-restore
 test-e2e-cluster-backup-restore: ## Run the restore-into-a-new-Instance e2e-cluster suite.
 	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster/backup-restore
+
+.PHONY: test-e2e-cluster-monitoring
+test-e2e-cluster-monitoring: ## Run the monitoring contract e2e-cluster suite.
+	. ./test/vars.sh && chainsaw test --config ./test/e2e-cluster/.chainsaw.yaml ./test/e2e-cluster/monitoring
 
 .PHONY: test-e2e
 test-e2e: ## Run Playwright UI tests against a running OpenEverest UI (EVEREST_URL, default http://localhost:8080).
@@ -236,7 +251,25 @@ deploy-provider-ci: helm-deps ## Deploy the provider via Helm for CI (IMG must a
 		--wait --timeout 5m
 
 .PHONY: install-openeverest
-install-openeverest: ## Install the released OpenEverest core (CRDs, server, controller, UI) matching go.mod.
+install-openeverest: ## Install OpenEverest core (CRDs, server, controller, UI): core main while OPENEVEREST_CHARTS_REF is set, else the release matching go.mod.
+ifneq ($(OPENEVEREST_CHARTS_REF),)
+	rm -rf $(OPENEVEREST_CHARTS_DIR)
+	git clone --quiet --depth 1 --branch $(OPENEVEREST_CHARTS_REF) https://github.com/openeverest/helm-charts $(OPENEVEREST_CHARTS_DIR)
+	@# The chart's pmm dependency comes from this repository.
+	helm repo add percona https://percona.github.io/percona-helm-charts >/dev/null 2>&1 || true
+	helm dependency build $(OPENEVEREST_CHARTS_DIR)/charts/everest
+	helm upgrade --install everest-core $(OPENEVEREST_CHARTS_DIR)/charts/everest \
+	  --namespace $(EVEREST_NAMESPACE) --create-namespace \
+	  --set server.initialAdminPassword=$(EVEREST_ADMIN_PASSWORD) \
+	  --set telemetry=false \
+	  --set upgrade.preflightChecks=false \
+	  --set server.image.repository=$(firstword $(subst :, ,$(OPENEVEREST_MAIN_IMAGE))) \
+	  --set server.image.tag=$(lastword $(subst :, ,$(OPENEVEREST_MAIN_IMAGE))) \
+	  --set server.image.pullPolicy=Always \
+	  --wait --timeout 10m
+	@# The CRDs of the core pinned in go.mod, which may be ahead of the chart's.
+	$(MAKE) install-openeverest-crds
+else
 	helm repo add openeverest $(OPENEVEREST_HELM_REPO) >/dev/null 2>&1 || true
 	helm repo update openeverest
 	helm upgrade --install everest-core openeverest/openeverest \
@@ -248,11 +281,12 @@ install-openeverest: ## Install the released OpenEverest core (CRDs, server, con
 	  --set kube-state-metrics.enabled=false \
 	  --set createMonitoringResources=false \
 	  --wait --timeout 10m
+endif
 
 .PHONY: install-openeverest-crds
 install-openeverest-crds: ## Install OpenEverest CRDs from the core version pinned in go.mod.
 	go mod download github.com/openeverest/openeverest/v2
-	kubectl apply --server-side -f "$$(go list -m -f '{{.Dir}}' github.com/openeverest/openeverest/v2)/config/crd/bases"
+	kubectl apply --server-side --force-conflicts -f "$$(go list -m -f '{{.Dir}}' github.com/openeverest/openeverest/v2)/config/crd/bases"
 
 .PHONY: install-cloudnative-pg
 install-cloudnative-pg: ## Install CloudNativePG operator, Barman plugin, and BackupClasses.

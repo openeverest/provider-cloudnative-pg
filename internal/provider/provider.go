@@ -15,8 +15,8 @@ import (
 	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition/backupclasses"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
@@ -40,7 +40,7 @@ func New() *Provider {
 	if extensionCatalog == "" {
 		extensionCatalog = common.DefaultExtensionCatalog
 	}
-	return &Provider{
+	p := &Provider{
 		extensionCatalog: extensionCatalog,
 		BaseProvider: controller.BaseProvider{
 			ProviderName: common.ProviderName,
@@ -60,12 +60,13 @@ func New() *Provider {
 			SchemeFuncs: []func(*runtime.Scheme) error{
 				cnpgv1.SchemeBuilder.AddToScheme,
 				addBarmanCloudScheme,
-				monitoringv1.AddToScheme,
 				batchv1.AddToScheme,
 				appsv1.AddToScheme,
 			},
 		},
 	}
+	p.SetShippedBackupClasses(backupclasses.Shipped())
+	return p
 }
 
 func addBarmanCloudScheme(scheme *runtime.Scheme) error {
@@ -157,6 +158,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 	}
 	cnpg.ApplyExtensions(pg, &custom, extensionImages)
 	cnpg.ApplyQueryStatisticsMonitoring(pg, &custom)
+	disableOperatorPodMonitor(pg)
 
 	if c.Instance().Spec.DataSource != nil {
 		recovery, externalCluster, err := barman.BuildRecoveryConfig(c, custom)
@@ -191,7 +193,8 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
-	if err := syncPodMonitor(c, pg); err != nil {
+	// Releases before the monitoring contract created a PodMonitor.
+	if err := deleteLegacyPodMonitor(c); err != nil {
 		return err
 	}
 
@@ -214,9 +217,10 @@ func (p *Provider) Sync(c *controller.Context) error {
 // Cleanup handles deletion of provider-managed resources.
 //
 // Resources created via c.Apply() carry owner references and are garbage
-// collected with the Instance. No extra cleanup is required today.
+// collected with the Instance. The PodMonitor of earlier releases is deleted
+// explicitly, in case it never got another Sync after the upgrade.
 func (p *Provider) Cleanup(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	l.Info("Cleaning up instance", "name", c.Name())
-	return nil
+	return deleteLegacyPodMonitor(c)
 }

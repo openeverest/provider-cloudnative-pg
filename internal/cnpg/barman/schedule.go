@@ -83,7 +83,11 @@ func storageRetentionPolicy(storage corev1alpha1.InstanceBackupStorage) (string,
 // SyncScheduledBackups reconciles one CNPG ScheduledBackup per enabled
 // schedule and deletes the ones owned by the Instance that are no longer desired.
 func SyncScheduledBackups(c *controller.Context) error {
-	desired, err := buildScheduledBackups(c.Name(), c.Instance().Spec.Backup)
+	stores, err := RenderedObjectStores(c)
+	if err != nil {
+		return err
+	}
+	desired, err := buildScheduledBackups(c.Name(), c.Instance().Spec.Backup, stores)
 	if err != nil {
 		return &controller.BackupConfigError{
 			Reason:  "InvalidBackupSchedule",
@@ -117,13 +121,24 @@ func SyncScheduledBackups(c *controller.Context) error {
 	return nil
 }
 
-func buildScheduledBackups(clusterName string, backup *corev1alpha1.InstanceBackupSpec) ([]cnpgv1.ScheduledBackup, error) {
+// buildScheduledBackups builds the ScheduledBackups of the storages in
+// stores, the ObjectStore of each storage the engine gets keyed by
+// BackupStorage name.
+func buildScheduledBackups(
+	clusterName string,
+	backup *corev1alpha1.InstanceBackupSpec,
+	stores map[string]string,
+) ([]cnpgv1.ScheduledBackup, error) {
 	if backup == nil || !backup.Enabled {
 		return nil, nil
 	}
 
 	var scheduledBackups []cnpgv1.ScheduledBackup
 	for _, storage := range backup.Storages {
+		store, ok := stores[storage.StorageRef.Name]
+		if !ok {
+			continue
+		}
 		for _, schedule := range storage.Schedules {
 			if !schedule.Enabled {
 				continue
@@ -145,7 +160,7 @@ func buildScheduledBackups(clusterName string, backup *corev1alpha1.InstanceBack
 					// Produced Backups stay unowned so mirrored OpenEverest Backups can take controller ownership.
 					BackupOwnerReference: "none",
 					Method:               cnpgv1.BackupMethodPlugin,
-					PluginConfiguration:  PluginConfiguration(storage.StorageRef.Name),
+					PluginConfiguration:  PluginConfiguration(store),
 					Target:               cnpgv1.BackupTarget(params.Target),
 				},
 			})

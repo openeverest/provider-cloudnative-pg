@@ -3,3 +3,4 @@
 package providercloudnativepg
 
 //go:generate go tool provider-sdk generate
+//go:generate go run ./hack/reference-docs

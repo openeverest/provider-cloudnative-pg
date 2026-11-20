@@ -305,8 +305,8 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
 		}
 		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
-		if got.Phase != corev1alpha1.InstancePhaseReady {
-			t.Fatalf("phase = %q (%s)", got.Phase, got.Message)
+		if !got.Converged || got.Available != controller.Available {
+			t.Fatalf("converged = %t, available = %q (%s)", got.Converged, got.Available, got.Message)
 		}
 		if got.ConnectionDetails.Host != "pg-pooler.ns.svc" || got.ConnectionDetails.Port != port {
 			t.Fatalf("endpoint = %s:%s", got.ConnectionDetails.Host, got.ConnectionDetails.Port)
@@ -333,8 +333,8 @@ func TestPoolerConnectionDetails(t *testing.T) {
 		}
 		got := proxyStatus(t, cluster, secret, &runtime.RawExtension{Raw: []byte(`{"readOnly":true}`)},
 			rw, ro, poolerDeployment("pg-pooler", 1), poolerDeployment("pg-pooler-ro", 1))
-		if got.Phase != corev1alpha1.InstancePhaseReady {
-			t.Fatalf("phase = %q (%s)", got.Phase, got.Message)
+		if !got.Converged || got.Available != controller.Available {
+			t.Fatalf("converged = %t, available = %q (%s)", got.Converged, got.Available, got.Message)
 		}
 		if got.ConnectionDetails.Host != "pg-pooler.ns.svc" {
 			t.Fatalf("host = %s", got.ConnectionDetails.Host)
@@ -352,8 +352,14 @@ func TestPoolerConnectionDetails(t *testing.T) {
 		}
 		got := proxyStatus(t, cluster, secret, &runtime.RawExtension{Raw: []byte(`{"readOnly":true}`)},
 			rw, poolerDeployment("pg-pooler", 1))
-		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for the CloudNativePG pooler" {
-			t.Fatalf("status = %s %q", got.Phase, got.Message)
+		if got.Converged || got.Message != "Waiting for the CloudNativePG Pooler pg-pooler-ro to be created" {
+			t.Fatalf("converged = %t, message = %q", got.Converged, got.Message)
+		}
+		// The read-write pooler serves meanwhile, and host-ro stays on the
+		// PostgreSQL Service until the read-only one does.
+		if got.Available != controller.Available || got.ConnectionDetails.Host != "pg-pooler.ns.svc" ||
+			got.ConnectionDetails.AdditionalProperties[hostROProperty] != "pg-ro.ns.svc" {
+			t.Fatalf("available = %q, details = %+v", got.Available, got.ConnectionDetails)
 		}
 	})
 
@@ -364,8 +370,12 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 2},
 		}
 		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
-		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for PgBouncer pods (1/2 ready)" {
-			t.Fatalf("status = %s %q", got.Phase, got.Message)
+		if got.Converged || got.Message != "Waiting for the PgBouncer pods of pg-pooler (1 of 2 ready)" {
+			t.Fatalf("converged = %t, message = %q", got.Converged, got.Message)
+		}
+		// One ready PgBouncer pod is enough for clients to connect.
+		if got.Available != controller.Available || got.ConnectionDetails.Host != "pg-pooler.ns.svc" {
+			t.Fatalf("available = %q, host = %q", got.Available, got.ConnectionDetails.Host)
 		}
 	})
 
@@ -375,8 +385,15 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive},
 		}
 		got := proxyStatus(t, cluster, secret, nil, pooler)
-		if got.Phase != corev1alpha1.InstancePhaseProvisioning {
-			t.Fatalf("phase = %q", got.Phase)
+		if got.Converged || got.Message != "Waiting for the PgBouncer Deployment pg-pooler" {
+			t.Fatalf("converged = %t, message = %q", got.Converged, got.Message)
+		}
+		// Clients connect through PgBouncer, so none ready means unavailable.
+		if got.Available != controller.Unavailable || got.AvailableReason != reasonNoPgBouncerReady {
+			t.Fatalf("available = %q (%s)", got.Available, got.AvailableReason)
+		}
+		if !got.ConnectionDetails.IsEmpty() {
+			t.Fatalf("connection details published: %+v", got.ConnectionDetails)
 		}
 	})
 
@@ -386,8 +403,8 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseInactive, PhaseReason: "cluster not found"},
 		}
 		got := proxyStatus(t, cluster, secret, nil, pooler, poolerDeployment("pg-pooler", 1))
-		if got.Phase != corev1alpha1.InstancePhaseProvisioning || got.Message != "waiting for the CloudNativePG pooler (inactive): cluster not found" {
-			t.Fatalf("status = %s %q", got.Phase, got.Message)
+		if got.Converged || got.Message != "Waiting for the CloudNativePG Pooler pg-pooler (inactive: cluster not found)" {
+			t.Fatalf("converged = %t, message = %q", got.Converged, got.Message)
 		}
 	})
 
@@ -397,8 +414,12 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseFailed, PhaseReason: "image catalog missing"},
 		}
 		got := proxyStatus(t, cluster, secret, nil, pooler)
-		if got.Phase != corev1alpha1.InstancePhaseFailed || got.Message != "failed: image catalog missing" {
-			t.Fatalf("status = %s %q", got.Phase, got.Message)
+		const want = "CloudNativePG reports Pooler pg-pooler as failed: image catalog missing"
+		if got.Converged || got.Message != want {
+			t.Fatalf("converged = %t, message = %q", got.Converged, got.Message)
+		}
+		if len(got.Problems) != 1 || got.Problems[0].Reason != reasonPoolerFailed || got.Problems[0].Message != want {
+			t.Fatalf("problems = %+v", got.Problems)
 		}
 	})
 
@@ -413,8 +434,8 @@ func TestPoolerConnectionDetails(t *testing.T) {
 		got := proxyStatusWithService(t, cluster, secret, nil,
 			&corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
 			pooler, poolerDeployment("pg-pooler", 1), lb)
-		if got.Phase != corev1alpha1.InstancePhaseReady {
-			t.Fatalf("phase = %q (%s)", got.Phase, got.Message)
+		if !got.Converged {
+			t.Fatalf("converged = false (%s)", got.Message)
 		}
 		if got.ConnectionDetails.Host != "pg-pooler.ns.svc" || got.ConnectionDetails.Port != port {
 			t.Fatalf("endpoint = %s:%s", got.ConnectionDetails.Host, got.ConnectionDetails.Port)

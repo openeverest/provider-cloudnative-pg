@@ -35,8 +35,8 @@ func (p *Provider) Mirror(ctx context.Context, c client.Client, obj client.Objec
 	if pluginCfg == nil || pluginCfg.Name != barman.PluginName {
 		return nil, nil
 	}
-	storageName := pluginCfg.Parameters[barman.PluginParameterObjectStore]
-	if storageName == "" {
+	objectStore := pluginCfg.Parameters[barman.PluginParameterObjectStore]
+	if objectStore == "" {
 		return nil, nil
 	}
 
@@ -55,6 +55,10 @@ func (p *Provider) Mirror(ctx context.Context, c client.Client, obj client.Objec
 		return nil, nil
 	}
 	schedule, ok := barman.ScheduleForScheduledBackup(instance.Name, instance.Spec.Backup, sbName)
+	if !ok {
+		return nil, nil
+	}
+	storageName, ok := storageOfObjectStore(instance, objectStore)
 	if !ok {
 		return nil, nil
 	}
@@ -80,4 +84,15 @@ func (p *Provider) Mirror(ctx context.Context, c client.Client, obj client.Objec
 // OperatorBackupType implements controller.BackupMirror.
 func (p *Provider) OperatorBackupType() client.Object {
 	return &cnpgv1.Backup{}
+}
+
+// storageOfObjectStore returns the backup storage of instance whose
+// ObjectStore is objectStore.
+func storageOfObjectStore(instance *corev1alpha1.Instance, objectStore string) (string, bool) {
+	for _, storage := range instance.Spec.Backup.Storages {
+		if barman.ObjectStoreName(instance.Name, storage.StorageRef.Name) == objectStore {
+			return storage.StorageRef.Name, true
+		}
+	}
+	return "", false
 }

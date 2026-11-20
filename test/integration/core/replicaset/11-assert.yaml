@@ -24,7 +24,10 @@ spec:
             max_connections: "100"
             shared_buffers: "128MB"
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  (conditions[?type == 'Available'].status | [0]): "True"
+  (components[?name == 'engine'] | [0].desiredReplicas): 3
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster

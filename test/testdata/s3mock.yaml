@@ -12,13 +12,18 @@ kind: BackupStorage
 metadata:
   name: s3mock-s3
 spec:
-  type: s3
-  s3:
-    bucket: backups
+  backupStorageClassRef:
+    name: s3
+  location:
+    objectStore:
+      bucket: backups
+  parameters:
     region: us-east-1
     endpointURL: http://s3mock:9090
     forcePathStyle: true
-    verifyTLS: false
+    implementation: other
+  authentication:
+    mode: AccessKey
     credentialsSecretRef:
       name: s3mock-credentials
 ---

@@ -28,7 +28,7 @@ spec:
               set -e
               kubectl wait --for=condition=Available -n everest-system deploy --all --timeout=60s
               kubectl wait --for=condition=Available -n provider-system deploy/provider-cloudnative-pg deploy/cnpg-operator --timeout=60s
-              kubectl get backupclass cnpg-barman-plugin
+              kubectl wait --for=condition=Accepted backupclass/cnpg-barman-plugin --timeout=60s
 
     - name: start-s3mock
       try:
@@ -48,7 +48,7 @@ spec:
               set -e
               kubectl wait --for=create cluster/pg-src -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=condition=Ready cluster/pg-src -n "$NAMESPACE" --timeout=480s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pg-src -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/pg-src -n "$NAMESPACE" --timeout=60s
 
     - name: seed-source-data
       try:
@@ -79,7 +79,7 @@ spec:
               kubectl wait --for=condition=Ready cluster/pg-dest -n "$NAMESPACE" --timeout=480s
               kubectl wait --for=condition=DataSourceReady instance/pg-dest -n "$NAMESPACE" --timeout=120s
               kubectl wait --for=jsonpath='{.status.state}'=Succeeded restore.backup.openeverest.io/pg-dest-datasource -n "$NAMESPACE" --timeout=60s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pg-dest -n "$NAMESPACE" --timeout=120s
+              kubectl wait --for=condition=Ready instance/pg-dest -n "$NAMESPACE" --timeout=120s
 
     - name: verify-restored-data
       try:
@@ -105,9 +105,8 @@ spec:
               got="$(kubectl exec -n "$NAMESPACE" pg-src-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -tAc 'SELECT note FROM e2e_restore WHERE id = 1')"
               echo "source row after deleting the restored Instance: $got"
               test "$got" = openeverest
-              # TODO(#47): also require objectstore/s3mock-s3 to survive; today the
-              # restored Instance can take over its ownership, so deleting it may
-              # garbage-collect the source's ObjectStore.
+              # Each Instance has its own ObjectStores: the source keeps archiving.
+              test -n "$(kubectl get objectstore -n "$NAMESPACE" -l backup.openeverest.io/storage=s3mock-s3,app.kubernetes.io/instance=pg-src -o name)"
 
     # Wait for PostgreSQL to stop while S3Mock still runs: chainsaw deletes
     # S3Mock right after this step, and a shutdown archiving WAL to a

@@ -2,13 +2,34 @@
 # Uses method: plugin with barman-cloud.cloudnative-pg.io — not the deprecated
 # in-tree Cluster.spec.backup.barmanObjectStore integration.
 #
+# provider-sdk generate makes the class ProviderManaged and names this
+# provider in providerManaged.providerRef: the provider claims and executes it.
+#
+# backupStorageClasses: BackupStorageClasses the engine writes to, with their
+# auth modes, the parameters it supports (parametersSchema narrows the storage
+# class's schema) and the spec.tls settings it honours (tls).
+#
 # See https://cloudnative-pg.github.io/plugin-barman-cloud/docs/latest/usage/
 
 parametersSchema:
     openAPIV3Schema: CnpgBarmanPluginBackupConfig
 description: CloudNativePG backups via the CNPG-I Barman Cloud Plugin (object-store WAL archiving and base backups).
 displayName: CNPG Barman Cloud Plugin
-executionMode: ProviderManaged
+backupStorageClasses:
+    - name: s3
+      authModes:
+          - AccessKey
+      parametersSchema:
+          openAPIV3Schema:
+              properties:
+                  # Barman Cloud reaches GCS through its native client, not its S3 one.
+                  implementation:
+                      enum: [aws, minio, ceph, other]
+      tls:
+          # ObjectStore.spec.configuration.endpointCA.
+          customCA: Supported
+          # Barman Cloud cannot turn certificate verification off.
+          insecureSkipVerify: None
 providerManaged:
     supportsPITR: true
     # CNPG allows a single WAL archiver plugin, and the plugin writes base backups
@@ -16,5 +37,3 @@ providerManaged:
     limits:
         maxStorages: 1
         maxPITREnabledStorages: 1
-supportedProviders:
-    - provider-cloudnative-pg

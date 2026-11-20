@@ -8,12 +8,10 @@ import (
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
-	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const testNamespace = "ns"
@@ -148,7 +146,8 @@ func TestBuildScheduledBackups(t *testing.T) {
 		},
 	}
 
-	got, err := buildScheduledBackups("pg", backup)
+	stores := map[string]string{"s3": "pg-s3-store"}
+	got, err := buildScheduledBackups("pg", backup, stores)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,25 +171,22 @@ func TestBuildScheduledBackups(t *testing.T) {
 	if sb.Spec.Target != cnpgv1.BackupTargetPrimary {
 		t.Errorf("target = %q, want primary", sb.Spec.Target)
 	}
-	if sb.Spec.PluginConfiguration == nil || sb.Spec.PluginConfiguration.Parameters[PluginParameterObjectStore] != "s3" {
-		t.Errorf("plugin configuration does not reference storage s3: %+v", sb.Spec.PluginConfiguration)
+	if sb.Spec.PluginConfiguration == nil || sb.Spec.PluginConfiguration.Parameters[PluginParameterObjectStore] != "pg-s3-store" {
+		t.Errorf("plugin configuration does not reference the s3 ObjectStore: %+v", sb.Spec.PluginConfiguration)
+	}
+
+	if got, err := buildScheduledBackups("pg", backup, nil); err != nil || len(got) != 0 {
+		t.Fatalf("expected no ScheduledBackups for an unrendered storage, got %d (err %v)", len(got), err)
 	}
 
 	backup.Enabled = false
-	got, err = buildScheduledBackups("pg", backup)
+	got, err = buildScheduledBackups("pg", backup, stores)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("expected no ScheduledBackups when backups are disabled, got %d (err %v)", len(got), err)
 	}
 }
 
 func TestSyncScheduledBackups(t *testing.T) {
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{cnpgv1.AddToScheme, corev1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	instance := &corev1alpha1.Instance{
 		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace, UID: types.UID("instance-uid")},
 		Spec: corev1alpha1.InstanceSpec{Backup: &corev1alpha1.InstanceBackupSpec{
@@ -212,8 +208,7 @@ func TestSyncScheduledBackups(t *testing.T) {
 	}}
 	unmanaged := &cnpgv1.ScheduledBackup{ObjectMeta: metav1.ObjectMeta{Name: "manual", Namespace: testNamespace}}
 
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, stale, foreign, unmanaged).Build()
-	ctx := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+	ctx, cl := storageTestContext(t, instance, testBackupStorage("s3", minioParameters, nil), stale, foreign, unmanaged)
 
 	if err := SyncScheduledBackups(ctx); err != nil {
 		t.Fatalf("sync: %v", err)

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -29,14 +30,14 @@ func TestConnectionDetails(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		cluster    *cnpgv1.Cluster
-		objects    []client.Object
-		parameters string
-		service    *corev1alpha1.Service
-		wantPhase  corev1alpha1.InstancePhase
-		wantMsg    string
-		want       controller.ConnectionDetails
+		name          string
+		cluster       *cnpgv1.Cluster
+		objects       []client.Object
+		parameters    string
+		service       *corev1alpha1.Service
+		wantConverged bool
+		wantMsg       string
+		want          controller.ConnectionDetails
 	}{
 		{
 			name: "application user",
@@ -48,7 +49,7 @@ func TestConnectionDetails(t *testing.T) {
 				credentialSecret("pg-app", "other", "nope", "5432"),
 				credentialSecret("pg-superuser", "postgres", "admin", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "5432", "app", "p@ss word", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:p%40ss%20word@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -62,8 +63,8 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", "5432"),
 			},
-			parameters: `{"requireTLS":true}`,
-			wantPhase:  corev1alpha1.InstancePhaseReady,
+			parameters:    `{"requireTLS":true}`,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -77,7 +78,7 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", "15432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "15432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:secret@pg-rw.ns.svc:15432/app?sslmode=require",
@@ -91,7 +92,7 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", ""),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", strconv.Itoa(cnpgpostgres.ServerPort), "app", "secret", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:secret@pg-rw.ns.svc:"+strconv.Itoa(cnpgpostgres.ServerPort)+"/app?sslmode=require",
@@ -112,7 +113,7 @@ func TestConnectionDetails(t *testing.T) {
 				credentialSecret("custom-superuser", "postgres", "admin", ""),
 				credentialSecret("pg-app", "app", "nope", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", strconv.Itoa(cnpgpostgres.ServerPort), "postgres", "admin", "postgres", "custom-superuser", sslModeRequire, true, true,
 				"postgresql://postgres:admin@pg-rw.ns.svc:"+strconv.Itoa(cnpgpostgres.ServerPort)+"/postgres?sslmode=require",
@@ -129,7 +130,6 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("pg-superuser", "postgres", "admin", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseProvisioning,
 		},
 		{
 			name: "read-only service disabled",
@@ -146,7 +146,7 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, false,
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -167,7 +167,7 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, false, true,
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -182,9 +182,8 @@ func TestConnectionDetails(t *testing.T) {
 				credentialSecret("custom-app", "app", "secret", "5432"),
 				&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace}},
 			},
-			service:   &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
-			wantPhase: corev1alpha1.InstancePhaseProvisioning,
-			wantMsg:   "waiting for the load balancer address",
+			service: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			wantMsg: "waiting for the load balancer address",
 		},
 		{
 			name: "LoadBalancer publishes the external address",
@@ -202,8 +201,8 @@ func TestConnectionDetails(t *testing.T) {
 					},
 				},
 			},
-			service:   &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			service:       &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			wantConverged: true,
 			want: connectionWantExtra(
 				"203.0.113.10", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:secret@203.0.113.10:5432/app?sslmode=require",
@@ -219,9 +218,8 @@ func TestConnectionDetails(t *testing.T) {
 				credentialSecret("custom-app", "app", "secret", "5432"),
 				&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace}},
 			},
-			service:   &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
-			wantPhase: corev1alpha1.InstancePhaseProvisioning,
-			wantMsg:   "waiting for the node port",
+			service: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
+			wantMsg: "waiting for the node port",
 		},
 		{
 			name: "NodePort publishes host-lb and nodePort",
@@ -241,8 +239,8 @@ func TestConnectionDetails(t *testing.T) {
 					},
 				},
 			},
-			service:   &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			service:       &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
+			wantConverged: true,
 			want: connectionWantExtra(
 				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -260,7 +258,7 @@ func TestConnectionDetails(t *testing.T) {
 			objects: []client.Object{
 				credentialSecret("custom-app", "app", "secret", "5432"),
 			},
-			wantPhase: corev1alpha1.InstancePhaseReady,
+			wantConverged: true,
 			want: connectionWant(
 				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, false,
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
@@ -274,13 +272,13 @@ func TestConnectionDetails(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Status: %v", err)
 			}
-			if got.Phase != tt.wantPhase {
-				t.Fatalf("phase = %q, want %q (message: %s)", got.Phase, tt.wantPhase, got.Message)
+			if got.Converged != tt.wantConverged {
+				t.Fatalf("converged = %t, want %t (message: %s)", got.Converged, tt.wantConverged, got.Message)
 			}
-			if tt.wantPhase != corev1alpha1.InstancePhaseReady {
+			if !tt.wantConverged {
 				wantMsg := tt.wantMsg
 				if wantMsg == "" {
-					wantMsg = "waiting to get CloudNativePG credentials secret"
+					wantMsg = "Waiting for the CloudNativePG credentials Secret"
 				}
 				if got.Message != wantMsg {
 					t.Fatalf("message = %q, want %q", got.Message, wantMsg)
@@ -298,13 +296,21 @@ func readyCluster(pg *cnpgv1.Cluster) *cnpgv1.Cluster {
 	if pg.Spec.Instances == 0 {
 		pg.Spec.Instances = 2
 	}
+	instances := make([]string, 0, pg.Spec.Instances)
+	for i := range pg.Spec.Instances {
+		instances = append(instances, fmt.Sprintf("pg-%d", i+1))
+	}
 	pg.Status = cnpgv1.ClusterStatus{
-		Instances:      pg.Spec.Instances,
-		ReadyInstances: pg.Spec.Instances,
-		Conditions: []metav1.Condition{{
-			Type:   string(cnpgv1.ConditionClusterReady),
-			Status: metav1.ConditionTrue,
-		}},
+		Phase:           cnpgv1.PhaseHealthy,
+		Instances:       pg.Spec.Instances,
+		ReadyInstances:  pg.Spec.Instances,
+		CurrentPrimary:  instances[0],
+		TargetPrimary:   instances[0],
+		InstancesStatus: map[cnpgv1.PodStatus][]string{cnpgv1.PodHealthy: instances},
+		Conditions: []metav1.Condition{
+			{Type: string(cnpgv1.ConditionClusterReady), Status: metav1.ConditionTrue},
+			{Type: string(cnpgv1.ConditionInitialized), Status: metav1.ConditionTrue},
+		},
 	}
 	return pg
 }

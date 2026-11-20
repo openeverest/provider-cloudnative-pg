@@ -46,7 +46,7 @@ spec:
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].name}')" = pgbouncer
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}')" = 100m
 
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=120s
+              kubectl wait --for=condition=Ready instance/pooled -n "$NAMESPACE" --timeout=120s
               secret="$(kubectl get instance pooled -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
               test "$host" = "pooled-pooler.$NAMESPACE.svc"
@@ -102,7 +102,7 @@ spec:
               kubectl wait --for=create pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=jsonpath='{.status.phase}'=active pooler/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
               kubectl wait --for=condition=Available deployment/pooled-pooler-ro -n "$NAMESPACE" --timeout=180s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=180s
+              kubectl wait --for=condition=Ready instance/pooled -n "$NAMESPACE" --timeout=180s
 
               test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.type}')" = ro
               test "$(kubectl get pooler pooled-pooler-ro -n "$NAMESPACE" -o jsonpath='{.spec.cluster.name}')" = pooled
@@ -193,7 +193,7 @@ spec:
               echo "host-ro after turning readOnly off: $host_ro"
               test "$host_ro" = "pooled-ro.$NAMESPACE.svc"
               test "$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)" = "pooled-pooler.$NAMESPACE.svc"
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
       catch:
         - script:
             content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
@@ -223,7 +223,7 @@ spec:
               test "$host" = "pooled-rw.$NAMESPACE.svc"
               host_ro="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-ro}' | base64 -d)"
               test "$host_ro" = "pooled-ro.$NAMESPACE.svc"
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/pooled -n "$NAMESPACE" --timeout=60s
       catch:
         - script:
             content: kubectl get instance/pooled -n "$NAMESPACE" -o yaml
