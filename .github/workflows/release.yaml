@@ -207,6 +207,11 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
 
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
       - name: Prepare RC chart
         if: env.IS_RC == 'true'
         run: |
@@ -218,6 +223,19 @@ jobs:
         run: |
           cd charts/provider-cloudnative-pg
           VERSION=${{ env.VERSION }} IMAGE_PREFIX=${{ env.IMAGE_PREFIX }} make release
+
+      - name: Check the generated files carry the release version
+        run: |
+          cd charts/provider-cloudnative-pg
+          got="$(yq '.spec.release.version' generated/provider-spec.yaml)"
+          if [[ "$got" != "$VERSION" ]]; then
+            echo "::error::generated/provider-spec.yaml has release version $got, expected $VERSION"
+            exit 1
+          fi
+          if grep -rh 'openeverest.io/provider-version:' generated/backupclasses | grep -vq "provider-version: ${VERSION}\$"; then
+            echo "::error::generated/backupclasses do not carry provider-version $VERSION"
+            exit 1
+          fi
 
       # chart-releaser's cr upload is incompatible with GitHub immutable releases:
       # it publishes an empty release, then fails uploading assets (422).
