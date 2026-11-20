@@ -72,6 +72,7 @@ provider itself is covered under [Installation](#installation).
 | Connection pooling | ✅ | optional `proxy` component → CloudNativePG `Pooler` (PgBouncer, type `rw`); `parameters.readOnly` also creates a type `ro` Pooler; see [Connection pooling](#connection-pooling) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy` (all fields), or `parameters.affinity` — not both |
 | Pod priority | ✅ | `parameters.priorityClassName` → CloudNativePG `spec.priorityClassName`; the PriorityClass must exist, and changing it rolls the instance pods |
+| Service exposure | ✅ | `spec.components.engine.service` (`serviceType`, `annotations`, `loadBalancerService.sourceRanges`) → CNPG `managed.services.additional` selecting `rw`; see [Service exposure](#service-exposure) |
 | Monitoring | ✅ | Metrics of the PostgreSQL pods published for monitoring extensions through `spec.monitoring.destinations`. See [Monitoring](#monitoring) |
 
 ### Extensions
@@ -476,12 +477,16 @@ kubectl get instance my-instance -o jsonpath='{.status.connectionSecretRef.name}
 ```
 
 The credentials (`host`, `port`, `username`, `password`, `uri`, `sslmode`,
-`host-r`, `host-ro`) live in the connection Secret named by
-`.status.connectionSecretRef.name`.
+`host-r`, `host-ro`, and when exposed `host-lb` / `nodePort`) live in the
+connection Secret named by `.status.connectionSecretRef.name`.
 
-- `host` is `<cluster>-rw.<namespace>.svc`, the read-write Service. With the
+- `host` is `<cluster>-rw.<namespace>.svc`, the read-write Service. With
+  [`engine.service.serviceType: LoadBalancer`](#service-exposure), it becomes
+  the load balancer address once assigned (TLS name checks against that
+  address need care; see [Service exposure](#service-exposure)). With the
   [`proxy` component](#connection-pooling) set, `host`, `port`, and `uri` point
-  at the rw pooler Service instead. `host-r` stays on the PostgreSQL Service.
+  at the rw pooler Service instead — even if `engine.service` also exposes a
+  LoadBalancer or NodePort — and `host-r` stays on the PostgreSQL Service.
 - `host-r` is `<cluster>-r.<namespace>.svc`. That Service targets every ready
   instance, including the primary. It is omitted when the read Service is
   disabled.
@@ -490,6 +495,11 @@ The credentials (`host`, `port`, `username`, `password`, `uri`, `sslmode`,
   read-only Service is enabled and `replicas` is at least 2. With
   [`proxy.parameters.readOnly`](#connection-pooling), it points at the ro
   pooler Service instead.
+- `host-lb` is `<cluster>-rw-lb.<namespace>.svc`, the managed exposure Service,
+  when `engine.service` is LoadBalancer or NodePort.
+- `nodePort` is the allocated NodePort on that managed Service when
+  `serviceType` is NodePort. External clients use `<any-node-IP>:<nodePort>`;
+  `host` and `port` stay on the in-cluster read-write Service.
 - `port` is the `port` key of the credential Secret. CloudNativePG writes
   `5432` there. A user-supplied basic-auth Secret may omit it, and then the
   port is `5432`. The PostgreSQL Service port is not configurable. With the
@@ -506,6 +516,44 @@ is the `ca.crt` key in the `<cluster>-ca` Secret, or in the Secret named by
 `sslrootcert` with `sslmode=verify-full` to authenticate the server.
 `pg-connection-string` also accepts `sslmode=no-verify`, which encrypts
 without checking the certificate. That value is not a libpq `sslmode`.
+
+### Service exposure
+
+`spec.components.engine.service` exposes the PostgreSQL primary through
+CloudNativePG [managed services](https://cloudnative-pg.io/documentation/current/service_management/):
+
+| Field | Maps to |
+|---|---|
+| `serviceType: ClusterIP` (default) | No extra Service; use the built-in `<instance>-rw` |
+| `serviceType: LoadBalancer` | Managed Service `<instance>-rw-lb`; connection `host` becomes the LB address; also publishes `host-lb` |
+| `serviceType: NodePort` | Same managed Service; connection keeps in-cluster `host`/`port` and publishes `host-lb` + `nodePort` |
+| `annotations` | Service template annotations (cloud LB settings) |
+| `loadBalancerService.sourceRanges` | `spec.loadBalancerSourceRanges` (LoadBalancer only) |
+
+Do not combine this with `parameters.managed.services.additional`; use one or the
+other. `parameters.managed.services.disabledDefaultServices` still works alongside
+`engine.service`. See [examples/instance-services.yaml](examples/instance-services.yaml).
+
+**Security.** CloudNativePG's default `pg_hba` admits password auth from any
+address. Prefer `loadBalancerService.sourceRanges` (CIDRs or bare IPs) so the
+cloud load balancer only accepts your clients, and tighten `pgHBA` if you need
+finer rules. Without `sourceRanges`, a public LoadBalancer reaches Postgres for
+anyone who has credentials.
+
+**TLS.** The connection Secret publishes `sslmode=require` and, for
+LoadBalancer, sets `host` to the external address. CloudNativePG's server
+certificate SANs cover the in-cluster Service DNS names (including
+`<instance>-rw-lb.<namespace>.svc`), not the cloud LB hostname or IP. libpq
+`require` encrypts without checking the name; clients that treat `require` as
+`verify-full` (for example `pg-connection-string`) need
+`certificates.serverAltDNSNames` for that external name, or
+`sslmode=no-verify` / an in-cluster tunnel. See [Connection details](#connection-details).
+
+**Proxy.** With a [`proxy` component](#connection-pooling), connection details
+still point at the pooler, and Ready is not gated on the load balancer address
+or NodePort allocation. The managed Service still selects the PostgreSQL
+primary (`rw`), so clients that use `<instance>-rw-lb` (or a node IP +
+`nodePort`) bypass PgBouncer. Admission warns when both are set.
 
 ### Instance status
 
@@ -777,7 +825,7 @@ The technology-specific knobs worth knowing about:
 | `postgresql` | `engine` | Full CloudNativePG `PostgresConfiguration` (GUCs, sync replicas, …) |
 | `extensions.*` | `engine` | First-class extensions; see [Extensions](#extensions). TimescaleDB (both editions) also defaults `timescaledb.telemetry_level=off` and `max_locks_per_transaction=128` unless set in `postgresql.parameters` |
 | `affinity` | `engine` | CloudNativePG `AffinityConfiguration`; rejected together with `schedulingPolicy` `affinity`, `nodeSelector` or `tolerations` |
-| `managed` | `engine` | Managed PostgreSQL roles |
+| `managed` | `engine` | Managed PostgreSQL roles; `managed.services.additional` is rejected together with `engine.service` LoadBalancer / NodePort |
 | `resizeInUseVolumes` | `engine` | Allow PVC expansion on running instances |
 | `priorityClassName` | `engine` | Kubernetes PriorityClass of the instance pods |
 | `certificates` | `engine` | TLS certificate configuration passthrough |

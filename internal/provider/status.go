@@ -153,9 +153,20 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 	if status.Message == "" || status.Available == controller.Available {
 		if details, ok := connectionDetails(c, pg); ok {
 			if poolers != nil {
+				// With a proxy, connection details point at the pooler; the engine
+				// exposure Service is still created for direct access but does not gate Ready.
 				poolers.route(c, &details)
+				status.ConnectionDetails = details
+			} else {
+				engine := c.Instance().Spec.Components[common.ComponentEngine]
+				if pendingMsg, err := applyServiceExposure(c, engine.Service, &details); err != nil {
+					return controller.Status{}, err
+				} else if pendingMsg != "" {
+					status.Message = cmp.Or(status.Message, pendingMsg)
+				} else {
+					status.ConnectionDetails = details
+				}
 			}
-			status.ConnectionDetails = details
 		} else {
 			status.Message = cmp.Or(status.Message, "Waiting for the CloudNativePG credentials Secret")
 		}

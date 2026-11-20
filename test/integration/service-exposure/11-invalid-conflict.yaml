@@ -1,0 +1,33 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: exposed-invalid-conflict
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  version: "18.7"
+  components:
+    engine:
+      type: postgresql
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi
+      service:
+        serviceType: LoadBalancer
+      parameters:
+        managed:
+          services:
+            additional:
+              - selectorType: rw
+                serviceTemplate:
+                  metadata:
+                    name: custom-rw-lb
+                  spec:
+                    type: LoadBalancer

@@ -52,10 +52,13 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
 	errs = append(errs, invalid(enginePath.Child("schedulingPolicy"), cnpg.ValidateScheduling(engine.SchedulingPolicy, &custom))...)
+	_, hasProxy := instance.Spec.Components[common.ComponentProxy]
+	serviceErrs, serviceWarnings := validateService(instance.Name, engine.Service, &custom, hasProxy)
+	errs = append(errs, serviceErrs...)
 	errs = append(errs, invalid(engineParams.Child("extensions"), cnpg.ValidateExtensions(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("extensions", "pgStatStatements"), cnpg.ValidatePgStatStatements(&custom))...)
 
-	warnings := monitoringWarnings(instance, &custom)
+	warnings := append(monitoringWarnings(instance, &custom), serviceWarnings...)
 	if in.Old != nil {
 		old, err := engineCustomSpec(in.Old.Spec.Components[common.ComponentEngine])
 		if err == nil {

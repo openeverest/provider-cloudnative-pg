@@ -690,6 +690,20 @@ ui:
       label: "Advanced configuration"
       description: "Configure advanced settings for your database"
       components:
+        externalAccess:
+          uiType: select
+          path: spec.components.engine.service.serviceType
+          fieldParams:
+            label: "External access"
+            helperText: "Expose the PostgreSQL primary outside the cluster. ClusterIP keeps the default in-cluster Services. LoadBalancer publishes the LB address as host (set loadBalancerService.sourceRanges so it is not open to the world). NodePort keeps the in-cluster host and publishes host-lb plus the allocated nodePort for <nodeIP>:<nodePort> access. With a proxy, clients of the managed Service still reach Postgres directly (bypass PgBouncer)."
+            defaultValue: "ClusterIP"
+            options:
+              - label: "ClusterIP"
+                value: "ClusterIP"
+              - label: "LoadBalancer"
+                value: "LoadBalancer"
+              - label: "NodePort"
+                value: "NodePort"
         storageClass:
           uiType: select
           path: spec.components.engine.storage.storageClass
@@ -756,6 +770,7 @@ ui:
             minRows: 3
             maxRows: 8
       componentsOrder:
+        - externalAccess
         - storageClass
         - priorityClassName
         - requireTLS
