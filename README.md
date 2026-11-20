@@ -124,7 +124,7 @@ annotations.
 | PostGIS | `postgis` | ✅ | ✅ restarts | ❌ | Image volume |
 | pgRouting | `pgrouting` | ✅ | ✅ restarts | ❌ | Image volume; requires `postgis` |
 | pg_ivm | `pgivm` | ✅ | ❌ creation only ¹ | ❌ | Image volume, preloaded |
-| wal2json | `wal2json` | ✅ | ✅ restarts | ✅ restarts | Image volume; a logical decoding output plugin (no `CREATE EXTENSION`) — drop the replication slots that use it before disabling |
+| wal2json | `wal2json` | ✅ | ✅ restarts | ✅ restarts | Image volume; a logical decoding output plugin (no `CREATE EXTENSION`), added to `output_plugin_libraries` on PostgreSQL 18.6+ unless you set it in `postgresql.parameters` — drop the replication slots that use it before disabling |
 | Apache AGE | `age` | ✅ | ❌ creation only ² | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded. Run `SET search_path = ag_catalog, "$user", public` before using it |
 | pg_cron | `pgcron` | ✅ | ❌ creation only ¹ ² | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded. See [pg_cron](#pg_cron) |
 | pg_repack | `pgrepack` | ✅ | ✅ restarts | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions). See [pg_repack](#pg_repack) |

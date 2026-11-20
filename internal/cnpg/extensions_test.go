@@ -329,6 +329,37 @@ func TestApplyExtensionsPgCron(t *testing.T) {
 	}
 }
 
+func TestApplyOutputPlugins(t *testing.T) {
+	userSet := withExtensions(components.ExtensionsSpec{Wal2JSON: on})
+	userSet.PostgresConfiguration = &cnpgv1.PostgresConfiguration{Parameters: map[string]string{"output_plugin_libraries": "pgoutput"}}
+	tests := []struct {
+		name    string
+		custom  *components.CNPGCustomSpec
+		version string
+		want    string
+		wantSet bool
+	}{
+		{name: "wal2json on 18.6", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.6", want: "pgoutput, test_decoding, wal2json", wantSet: true},
+		{name: "wal2json on 18.10", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.10", want: "pgoutput, test_decoding, wal2json", wantSet: true},
+		{name: "wal2json on 18.4, which lacks the parameter", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.4"},
+		{name: "no output plugin extension", custom: withExtensions(components.ExtensionsSpec{PostGIS: on}), version: "18.7"},
+		{name: "set by the user", custom: userSet, version: "18.7", want: "pgoutput", wantSet: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pg := &cnpgv1.Cluster{}
+			if tt.custom.PostgresConfiguration != nil {
+				pg.Spec.PostgresConfiguration = *tt.custom.PostgresConfiguration.DeepCopy()
+			}
+			ApplyOutputPlugins(pg, tt.custom, tt.version, "")
+			got, set := pg.Spec.PostgresConfiguration.Parameters["output_plugin_libraries"]
+			if set != tt.wantSet || got != tt.want {
+				t.Errorf("output_plugin_libraries = %q (set %t), want %q (set %t)", got, set, tt.want, tt.wantSet)
+			}
+		})
+	}
+}
+
 func TestApplyExtensionsPgPartman(t *testing.T) {
 	images := ExtensionImages{"pg-partman": {Config: cnpgv1.ExtensionConfiguration{Name: "pg-partman"}, SQLVersion: "5.5.0"}}
 	custom := withBootstrapDatabase(withExtensions(components.ExtensionsSpec{PgPartman: on}), "events")

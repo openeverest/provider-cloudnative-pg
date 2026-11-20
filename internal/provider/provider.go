@@ -152,6 +152,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 	cnpg.ApplyExtensions(pg, &custom, extensionImages)
+	cnpg.ApplyOutputPlugins(pg, &custom, engine.Version, c.Instance().Spec.Version)
 	cnpg.ApplyQueryStatisticsMonitoring(pg, &custom)
 	disableOperatorPodMonitor(pg)
 
