@@ -356,7 +356,7 @@ The provider chart is published as an OCI artifact:
 ```bash
 helm install provider-cloudnative-pg \
   oci://ghcr.io/openeverest/charts/provider-cloudnative-pg \
-  --version 0.3.4 \
+  --version 0.4.0 \
   --namespace everest-system
 ```
 
@@ -387,7 +387,7 @@ Upgrade and uninstall:
 
 ```bash
 helm upgrade provider-cloudnative-pg \
-  oci://ghcr.io/openeverest/charts/provider-cloudnative-pg --version 0.3.4
+  oci://ghcr.io/openeverest/charts/provider-cloudnative-pg --version 0.4.0
 helm uninstall provider-cloudnative-pg --namespace everest-system
 ```
 
