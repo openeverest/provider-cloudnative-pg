@@ -12,6 +12,8 @@ prepare-chart:
 	yq eval -i '.appVersion = "$(VERSION)"' Chart.yaml
 	yq eval -i '.image.repository = "$(IMAGE_PREFIX)/$(PROVIDER_IMAGE_NAME)"' values.yaml
 	yq eval -i '.image.tag = "$(VERSION)"' values.yaml
+	# The generated Provider spec and BackupClasses carry the chart appVersion.
+	cd ../.. && go tool provider-sdk generate
 	$(MAKE) deps
 
 .PHONY: release
