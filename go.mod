@@ -8,7 +8,7 @@ require (
 	github.com/cloudnative-pg/cloudnative-pg v1.30.1
 	github.com/cloudnative-pg/machinery v0.6.1
 	github.com/cloudnative-pg/plugin-barman-cloud v0.16.0
-	github.com/openeverest/openeverest/v2 v2.0.0-dev.2.0.20261117185355-3a639f48ff47
+	github.com/openeverest/openeverest/v2 v2.0.0-dev.2.0.20261119102452-a30ecb4b3a8f
 	github.com/stretchr/testify v1.12.1
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
