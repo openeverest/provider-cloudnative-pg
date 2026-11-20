@@ -594,7 +594,7 @@ func TestValidateExtensionsNotDisabled(t *testing.T) {
 	}
 }
 
-func TestExtensionsStatus(t *testing.T) {
+func TestExtensionsWait(t *testing.T) {
 	pgvector := withExtensions(components.ExtensionsSpec{PgVector: on})
 	tests := []struct {
 		name        string
@@ -616,9 +616,9 @@ func TestExtensionsStatus(t *testing.T) {
 				objects = append(objects, tt.db)
 			}
 			c, _ := newExtensionsTestContext(t, objects...)
-			status, blocked := ExtensionsStatus(c, tt.custom)
-			if blocked != tt.wantBlocked {
-				t.Fatalf("blocked = %t, want %t (status: %+v)", blocked, tt.wantBlocked, status)
+			wait := ExtensionsWait(c, tt.custom)
+			if blocked := wait != ""; blocked != tt.wantBlocked {
+				t.Fatalf("blocked = %t, want %t (waiting for: %q)", blocked, tt.wantBlocked, wait)
 			}
 		})
 	}

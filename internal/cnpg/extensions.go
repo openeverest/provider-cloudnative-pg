@@ -604,47 +604,39 @@ func ValidateExtensionsNotDisabled(c *controller.Context, custom *components.CNP
 	return nil
 }
 
-// ExtensionsStatus gates Instance readiness on the extensions Database CR.
-// Returns blocked=true while an enabled extension is still being created.
-func ExtensionsStatus(c *controller.Context, custom *components.CNPGCustomSpec) (controller.Status, bool) {
+// ExtensionsWait says what the extensions Database CR is waiting for while an
+// enabled extension is still being created, and "" when none is.
+func ExtensionsWait(c *controller.Context, custom *components.CNPGCustomSpec) string {
 	created := createdExtensions(custom)
 	if len(created) == 0 {
-		return controller.Status{}, false
+		return ""
 	}
 
 	db := &cnpgv1.Database{}
 	if err := c.Get(db, ExtensionsDatabaseName(c.Name())); err != nil {
 		if controller.IsNotFound(err) {
-			return controller.Provisioning("waiting for the extensions Database resource"), true
+			return "Waiting for the extensions Database resource"
 		}
-		return controller.Provisioning(fmt.Sprintf("waiting to get the extensions Database: %v", err)), true
+		return fmt.Sprintf("Waiting to get the extensions Database: %v", err)
 	}
 
 	if db.Status.ObservedGeneration != db.Generation {
-		return controller.Provisioning("waiting for the extensions Database to be reconciled"), true
+		return "Waiting for the extensions Database to be reconciled"
 	}
 
 	if db.Status.Applied == nil || !*db.Status.Applied {
-		msg := db.Status.Message
-		if msg == "" {
-			msg = "waiting for the extensions Database to be applied"
-		}
-		return controller.Provisioning(msg), true
+		return cmp.Or(db.Status.Message, "Waiting for the extensions Database to be applied")
 	}
 
 	for _, ext := range created {
 		for _, status := range db.Status.Extensions {
 			if status.Name == ext.sqlExtension && !status.Applied {
-				msg := status.Message
-				if msg == "" {
-					msg = fmt.Sprintf("waiting for extension %s to be created", ext.sqlExtension)
-				}
-				return controller.Provisioning(msg), true
+				return cmp.Or(status.Message, fmt.Sprintf("Waiting for extension %s to be created", ext.sqlExtension))
 			}
 		}
 	}
 
-	return controller.Status{}, false
+	return ""
 }
 
 func applicationDatabaseIdentity(custom *components.CNPGCustomSpec) (name, owner string) {

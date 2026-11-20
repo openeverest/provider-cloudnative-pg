@@ -2,21 +2,21 @@ package barman
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
-	"github.com/AlekSi/pointer"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	s3class "github.com/openeverest/openeverest/v2/backupstorageclasses/s3"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -79,37 +79,16 @@ func TestNativeRetention(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheme := runtime.NewScheme()
-			barmancloudv1.AddKnownTypes(scheme)
-			for _, add := range []func(*runtime.Scheme) error{
-				corev1.AddToScheme, corev1alpha1.AddToScheme,
-				backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
-			} {
-				if err := add(scheme); err != nil {
-					t.Fatal(err)
-				}
-			}
 			instance := &corev1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace, UID: "uid-1"},
 				Spec:       corev1alpha1.InstanceSpec{Backup: cfg},
 			}
-			bg := &backupv1alpha1.BackupStorage{
-				ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-				Spec: backupv1alpha1.BackupStorageSpec{S3: &backupv1alpha1.BackupStorageS3Spec{
-					Bucket: "backups", CredentialsSecretRef: commonv1alpha1.SecretRef{Name: "credentials"},
-				}},
-			}
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: testNamespace},
-				Data:       map[string][]byte{"AWS_ACCESS_KEY_ID": []byte("test"), "AWS_SECRET_ACCESS_KEY": []byte("test")},
-			}
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, bg, secret).Build()
-			ctx := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+			ctx, cl := storageTestContext(t, instance, testBackupStorage("s3", minioParameters, nil))
 			if _, err := SyncBackupInfrastructure(ctx); err != nil {
 				t.Fatal(err)
 			}
 			got := &barmancloudv1.ObjectStore{}
-			key := client.ObjectKey{Namespace: testNamespace, Name: "s3"}
+			key := client.ObjectKey{Namespace: testNamespace, Name: ObjectStoreName("pg", "s3")}
 			if err := cl.Get(context.Background(), key, got); err != nil {
 				t.Fatal(err)
 			}
@@ -119,6 +98,7 @@ func TestNativeRetention(t *testing.T) {
 			for i := range cfg.Storages[0].Schedules {
 				cfg.Storages[0].Schedules[i].Retention = nil
 			}
+			ctx, _ = storageTestContextWithClient(cl, instance)
 			if _, err := SyncBackupInfrastructure(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -132,165 +112,229 @@ func TestNativeRetention(t *testing.T) {
 	}
 }
 
-func TestSharedStorageRetention(t *testing.T) {
-	const provider = "provider-cloudnative-pg"
-	instanceWith := func(name, providerName, storage, retention string, enabled bool) *corev1alpha1.Instance {
-		s := schedule("daily", "0 2 * * *", true)
-		if retention != "" {
-			s.Retention = &corev1alpha1.BackupScheduleRetention{
-				Type: corev1alpha1.BackupScheduleRetentionTypeTime, Duration: retention,
-			}
-		}
-		return &corev1alpha1.Instance{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-			Spec: corev1alpha1.InstanceSpec{
-				ProviderRef: commonv1alpha1.ObjectRef{Name: providerName},
-				Backup: &corev1alpha1.InstanceBackupSpec{
-					Enabled:  enabled,
-					Storages: []corev1alpha1.InstanceBackupStorage{storageWithSchedules(storage, s)},
-				},
-			},
-		}
-	}
-	tests := []struct {
-		name    string
-		peer    *corev1alpha1.Instance
-		stored  *string
-		wantErr string
-	}{
-		{name: "no peer"},
-		{name: "peer with the same retention", peer: instanceWith("other", provider, "s3", "30d", true)},
-		{name: "peer with a different retention", peer: instanceWith("other", provider, "s3", "7d", true), wantErr: "other (7d)"},
-		{name: "peer keeps all", peer: instanceWith("other", provider, "s3", "", true), wantErr: "other (keep all)"},
-		{
-			name: "stored policy already matches this Instance", peer: instanceWith("other", provider, "s3", "7d", true),
-			stored: pointer.To("30d"),
-		},
-		{
-			name: "stored policy written by the peer", peer: instanceWith("other", provider, "s3", "7d", true),
-			stored: pointer.To("7d"), wantErr: "other (7d)",
-		},
-		{name: "peer uses another storage", peer: instanceWith("other", provider, "gcs", "7d", true)},
-		{name: "peer has backups disabled", peer: instanceWith("other", provider, "s3", "7d", false)},
-		{name: "peer belongs to another provider", peer: instanceWith("other", "provider-other", "s3", "7d", true)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			barmancloudv1.AddKnownTypes(scheme)
-			for _, add := range []func(*runtime.Scheme) error{
-				corev1.AddToScheme, corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
-			} {
-				if err := add(scheme); err != nil {
-					t.Fatal(err)
-				}
-			}
-			instance := instanceWith("pg", provider, "s3", "30d", true)
-			objects := []client.Object{
-				instance,
-				&backupv1alpha1.BackupStorage{
-					ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-					Spec: backupv1alpha1.BackupStorageSpec{S3: &backupv1alpha1.BackupStorageS3Spec{
-						Bucket: "backups", CredentialsSecretRef: commonv1alpha1.SecretRef{Name: "credentials"},
-					}},
-				},
-				&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: testNamespace},
-					Data:       map[string][]byte{"AWS_ACCESS_KEY_ID": []byte("test"), "AWS_SECRET_ACCESS_KEY": []byte("test")},
-				},
-			}
-			if tt.peer != nil {
-				objects = append(objects, tt.peer)
-			}
-			if tt.stored != nil {
-				objects = append(objects, &barmancloudv1.ObjectStore{
-					ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: testNamespace},
-					Spec:       barmancloudv1.ObjectStoreSpec{RetentionPolicy: *tt.stored},
-				})
-			}
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-			ctx := controller.NewContext(context.Background(), cl, instance, provider)
+const (
+	testStorageCredentials = "storage-credentials"
+	minioParameters        = `{"region":"us-east-1","endpointURL":"https://minio.minio.svc:9000","forcePathStyle":true,"implementation":"minio"}`
+	gcsParameters          = `{"region":"auto","endpointURL":"https://storage.googleapis.com","implementation":"gcs"}`
+)
 
-			_, err := SyncBackupInfrastructure(ctx)
-			got := &barmancloudv1.ObjectStore{}
-			getErr := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: "s3"}, got)
-			if tt.wantErr != "" {
-				bce := controller.AsBackupConfigError(err)
-				if bce == nil || bce.Reason != "BackupRetentionConflict" || !strings.Contains(bce.Message, tt.wantErr) {
-					t.Fatalf("error = %v, want BackupRetentionConflict mentioning %q", err, tt.wantErr)
-				}
-				if tt.stored == nil && !apierrors.IsNotFound(getErr) {
-					t.Fatalf("ObjectStore was created despite the conflict: %v", getErr)
-				}
-				if tt.stored != nil && got.Spec.RetentionPolicy != *tt.stored {
-					t.Fatalf("stored retention changed to %q despite the conflict", got.Spec.RetentionPolicy)
-				}
-				return
-			}
+func testBackupStorage(name, parameters string, tls *commonv1alpha1.TLSConfig) *backupv1alpha1.BackupStorage {
+	return &backupv1alpha1.BackupStorage{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, Generation: 1},
+		Spec: backupv1alpha1.BackupStorageSpec{
+			BackupStorageClassRef: commonv1alpha1.ObjectRef{Name: s3class.ClassName},
+			Location: backupv1alpha1.BackupStorageLocation{
+				ObjectStore: &backupv1alpha1.ObjectStoreLocation{Bucket: "backups", Prefix: "team"},
+			},
+			Parameters: &runtime.RawExtension{Raw: []byte(parameters)},
+			Authentication: commonv1alpha1.Authentication{
+				Mode:                 s3class.AuthModeAccessKey,
+				CredentialsSecretRef: &commonv1alpha1.SecretRef{Name: testStorageCredentials},
+			},
+			TLS: tls,
+		},
+		Status: backupv1alpha1.BackupStorageStatus{Conditions: []metav1.Condition{{
+			Type:               backupv1alpha1.BackupStorageConditionAccepted,
+			Status:             metav1.ConditionTrue,
+			Reason:             backupv1alpha1.ReasonAccepted,
+			ObservedGeneration: 1,
+		}}},
+	}
+}
+
+func storageTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	barmancloudv1.AddKnownTypes(scheme)
+	for _, add := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme, corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return scheme
+}
+
+// storageTestContext returns a Context for instance over a fake client
+// holding objs and the storage credentials and CA Secrets.
+func storageTestContext(t *testing.T, instance *corev1alpha1.Instance, objs ...client.Object) (*controller.Context, client.Client) {
+	t.Helper()
+	objs = append(objs, instance,
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: testStorageCredentials, Namespace: testNamespace},
+			Data: map[string][]byte{
+				s3class.KeyAWSAccessKeyID:     []byte("id"),
+				s3class.KeyAWSSecretAccessKey: []byte("secret"),
+			},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "storage-ca", Namespace: testNamespace},
+			Data:       map[string][]byte{"ca.crt": []byte("-----BEGIN CERTIFICATE-----")},
+		},
+	)
+	cl := fake.NewClientBuilder().WithScheme(storageTestScheme(t)).WithObjects(objs...).Build()
+	return storageTestContextWithClient(cl, instance)
+}
+
+// storageTestContextWithClient starts a new reconcile of instance: the
+// Context caches resolved storages, so a changed spec needs a new one.
+func storageTestContextWithClient(cl client.Client, instance *corev1alpha1.Instance) (*controller.Context, client.Client) {
+	return controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg"), cl
+}
+
+func backupInstance(name string, uid types.UID, storages ...string) *corev1alpha1.Instance {
+	instance := &corev1alpha1.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace, UID: uid},
+		Spec:       corev1alpha1.InstanceSpec{Backup: &corev1alpha1.InstanceBackupSpec{Enabled: true}},
+	}
+	for _, s := range storages {
+		instance.Spec.Backup.Storages = append(instance.Spec.Backup.Storages, storageWithSchedules(s))
+	}
+	return instance
+}
+
+func TestObjectStorePerInstance(t *testing.T) {
+	storage := testBackupStorage("s3", minioParameters, nil)
+	first := backupInstance("pg", "uid-1", "s3")
+	ctx, cl := storageTestContext(t, first, storage)
+	plugins, err := SyncBackupInfrastructure(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := backupInstance("other", "uid-2", "s3")
+	if err := cl.Create(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ = storageTestContextWithClient(cl, second)
+	if _, err := SyncBackupInfrastructure(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	name := ObjectStoreName("pg", "s3")
+	if len(plugins) != 1 || plugins[0].Parameters[PluginParameterObjectStore] != name {
+		t.Fatalf("plugin configuration = %+v, want archiving to %s", plugins, name)
+	}
+	for instance, want := range map[string]string{
+		"pg":    "s3://backups/team/backups/ns/pg/uid-1/s3/",
+		"other": "s3://backups/team/backups/ns/other/uid-2/s3/",
+	} {
+		got := &barmancloudv1.ObjectStore{}
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: ObjectStoreName(instance, "s3")}, got); err != nil {
+			t.Fatal(err)
+		}
+		cfg := got.Spec.Configuration
+		if cfg.DestinationPath != want {
+			t.Errorf("%s destinationPath = %q, want %q", instance, cfg.DestinationPath, want)
+		}
+		if cfg.EndpointURL != "https://minio.minio.svc:9000" || cfg.EndpointCA != nil {
+			t.Errorf("%s endpoint = %q, CA = %+v", instance, cfg.EndpointURL, cfg.EndpointCA)
+		}
+		if cfg.AWS == nil || cfg.AWS.AccessKeyIDReference.Name != testStorageCredentials ||
+			cfg.AWS.AccessKeyIDReference.Key != s3class.KeyAWSAccessKeyID {
+			t.Errorf("%s credentials = %+v", instance, cfg.AWS)
+		}
+		if got.Labels[StorageLabel] != "s3" {
+			t.Errorf("%s labels = %v", instance, got.Labels)
+		}
+	}
+}
+
+func TestObjectStoreTLS(t *testing.T) {
+	ca := &commonv1alpha1.TLSConfig{CA: &commonv1alpha1.CABundleSource{
+		SecretKeyRef: &commonv1alpha1.SecretKeyRef{Name: "storage-ca", Key: "ca.crt"},
+	}}
+	tests := map[string]struct {
+		parameters string
+		tls        *commonv1alpha1.TLSConfig
+		wantCA     bool
+		wantReason string
+	}{
+		"system trust store":       {parameters: minioParameters},
+		"custom CA":                {parameters: minioParameters, tls: ca, wantCA: true},
+		"insecureSkipVerify":       {parameters: minioParameters, tls: &commonv1alpha1.TLSConfig{InsecureSkipVerify: true}, wantReason: corev1alpha1.ReasonTLSOptionUnsupported},
+		"gcs through the S3 class": {parameters: gcsParameters, wantReason: corev1alpha1.ReasonImplementationUnsupported},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			instance := backupInstance("pg", "uid-1", "s3")
+			ctx, cl := storageTestContext(t, instance, testBackupStorage("s3", tt.parameters, tt.tls))
+			plugins, err := SyncBackupInfrastructure(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if getErr != nil || got.Spec.RetentionPolicy != "30d" {
-				t.Fatalf("ObjectStore retention = %q (%v), want 30d", got.Spec.RetentionPolicy, getErr)
+			got := &barmancloudv1.ObjectStore{}
+			getErr := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: ObjectStoreName("pg", "s3")}, got)
+			if tt.wantReason != "" {
+				resolved, err := ctx.BackupStorages()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resolved[0].Reason != tt.wantReason {
+					t.Fatalf("reason = %q, want %q", resolved[0].Reason, tt.wantReason)
+				}
+				if !apierrors.IsNotFound(getErr) || plugins != nil {
+					t.Fatalf("rejected storage was rendered: %v, plugins %+v", getErr, plugins)
+				}
+				return
+			}
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if gotCA := got.Spec.Configuration.EndpointCA; (gotCA != nil) != tt.wantCA ||
+				(gotCA != nil && (gotCA.Name != "storage-ca" || gotCA.Key != "ca.crt")) {
+				t.Fatalf("endpointCA = %+v, want CA %t", gotCA, tt.wantCA)
 			}
 		})
 	}
 }
 
-func TestEndpointCARef(t *testing.T) {
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, corev1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
+func TestStaleObjectStoresDeleted(t *testing.T) {
+	instance := backupInstance("pg", "uid-1", "s3", "s3-b")
+	ctx, cl := storageTestContext(t, instance,
+		testBackupStorage("s3", minioParameters, nil), testBackupStorage("s3-b", minioParameters, nil))
+	if _, err := SyncBackupInfrastructure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := &barmancloudv1.ObjectStore{ObjectMeta: metav1.ObjectMeta{
+		Name: "manual", Namespace: testNamespace, Labels: map[string]string{StorageLabel: "s3-b"},
+	}}
+	if err := cl.Create(context.Background(), unrelated); err != nil {
+		t.Fatal(err)
+	}
+
+	instance.Spec.Backup.Storages = instance.Spec.Backup.Storages[:1]
+	ctx, _ = storageTestContextWithClient(cl, instance)
+	if _, err := SyncBackupInfrastructure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exists := func(name string) bool {
+		err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &barmancloudv1.ObjectStore{})
+		if err != nil && !apierrors.IsNotFound(err) {
 			t.Fatal(err)
 		}
+		return err == nil
 	}
-	caSecret := func(data map[string][]byte) *corev1.Secret {
-		return &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "s3" + EndpointCASecretSuffix, Namespace: testNamespace},
-			Data:       data,
-		}
+	if !exists(ObjectStoreName("pg", "s3")) || exists(ObjectStoreName("pg", "s3-b")) || !exists("manual") {
+		t.Fatal("only the removed storage's ObjectStore owned by the Instance must be deleted")
 	}
 
-	tests := []struct {
-		name       string
-		endpoint   string
-		secret     *corev1.Secret
-		wantRef    bool
-		wantConfig bool
-	}{
-		{name: "http ignores CA Secret", endpoint: "http://minio:9000", secret: caSecret(map[string][]byte{EndpointCAKey: []byte("pem")})},
-		{name: "https without CA Secret uses system trust store", endpoint: "https://s3.us-east-1.amazonaws.com"},
-		{name: "https with CA Secret", endpoint: "HTTPS://seaweedfs", secret: caSecret(map[string][]byte{EndpointCAKey: []byte("pem")}), wantRef: true},
-		{name: "https with CA Secret missing key", endpoint: "https://seaweedfs", secret: caSecret(nil), wantConfig: true},
+	instance.Spec.Backup.Enabled = false
+	ctx, _ = storageTestContextWithClient(cl, instance)
+	if _, err := SyncBackupInfrastructure(ctx); err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			instance := &corev1alpha1.Instance{ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace}}
-			objects := []client.Object{instance}
-			if tt.secret != nil {
-				objects = append(objects, tt.secret)
-			}
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-			ctx := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+	if exists(ObjectStoreName("pg", "s3")) {
+		t.Fatal("ObjectStore survived disabling backups")
+	}
+}
 
-			ref, err := endpointCARef(ctx, "s3", tt.endpoint)
-
-			var configErr *controller.BackupConfigError
-			if tt.wantConfig {
-				if !errors.As(err, &configErr) {
-					t.Fatalf("expected BackupConfigError, got %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if gotRef := ref != nil; gotRef != tt.wantRef {
-				t.Fatalf("ref = %+v, wantRef %v", ref, tt.wantRef)
-			}
-			if ref != nil && (ref.Name != "s3"+EndpointCASecretSuffix || ref.Key != EndpointCAKey) {
-				t.Fatalf("unexpected ref %+v", ref)
-			}
-		})
+func TestObjectStoreName(t *testing.T) {
+	long := ObjectStoreName(strings.Repeat("a", 60), "storage")
+	if len(long) > 63 {
+		t.Fatalf("name length = %d", len(long))
+	}
+	if ObjectStoreName("a-b", "c") == ObjectStoreName("a", "b-c") {
+		t.Fatal("names collide across instance and storage boundaries")
 	}
 }

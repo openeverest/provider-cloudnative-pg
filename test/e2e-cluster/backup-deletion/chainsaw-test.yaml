@@ -30,7 +30,7 @@ spec:
               set -e
               kubectl wait --for=condition=Available -n everest-system deploy --all --timeout=60s
               kubectl wait --for=condition=Available -n provider-system deploy/provider-cloudnative-pg deploy/cnpg-operator --timeout=60s
-              kubectl get backupclass cnpg-barman-plugin
+              kubectl wait --for=condition=Accepted backupclass/cnpg-barman-plugin --timeout=60s
 
     - name: start-s3mock
       try:
@@ -56,12 +56,12 @@ spec:
               set -e
               kubectl wait --for=create cluster/pg-del -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=condition=Ready cluster/pg-del -n "$NAMESPACE" --timeout=480s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pg-del -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/pg-del -n "$NAMESPACE" --timeout=60s
 
     - name: retention-delegated-to-barman
       try:
         - script:
-            content: kubectl wait --for=jsonpath='{.spec.retentionPolicy}'=30d objectstore/s3mock-s3 -n "$NAMESPACE" --timeout=60s
+            content: kubectl wait --for=jsonpath='{.spec.retentionPolicy}'=30d objectstore -l backup.openeverest.io/storage=s3mock-s3,app.kubernetes.io/instance=pg-del -n "$NAMESPACE" --timeout=60s
 
     # CNPG runs one backup at a time per cluster, so take them one after the other.
     - name: take-backups
@@ -94,8 +94,12 @@ spec:
                 server="$(kubectl get backup.postgresql.cnpg.io/pg-del-$b -n "$NAMESPACE" -o jsonpath='{.status.serverName}')"
                 server="${server:-$(kubectl get backup.postgresql.cnpg.io/pg-del-$b -n "$NAMESPACE" -o jsonpath='{.spec.cluster.name}')}"
                 id="$(kubectl get backup.postgresql.cnpg.io/pg-del-$b -n "$NAMESPACE" -o jsonpath='{.status.backupId}')"
-                test -n "$server" && test -n "$id"
-                prefix="$server/base/$id/"
+                # The Instance's path in the bucket, e.g. backups/<ns>/pg-del/<uid>/s3mock-s3,
+                # as the Backup records it. Plugin backups leave the CloudNativePG
+                # Backup's status.destinationPath empty.
+                dest="$(kubectl get backup.backup.openeverest.io/pg-del-$b -n "$NAMESPACE" -o jsonpath='{.status.path}')"
+                test -n "$server" && test -n "$id" && test -n "$dest"
+                prefix="${dest%/}/$server/base/$id/"
                 keys="$(objects "$prefix")"
                 echo "$b: $keys object(s) under s3://backups/$prefix"
                 test "$keys" -gt 0

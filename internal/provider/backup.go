@@ -88,7 +88,7 @@ func (p *Provider) SyncBackup(c *controller.Context, backup *backupv1alpha1.Back
 			cnpgBackup.Spec = cnpgv1.BackupSpec{
 				Cluster:             cnpgv1.LocalObjectReference{Name: c.Name()},
 				Method:              cnpgv1.BackupMethodPlugin,
-				PluginConfiguration: barman.PluginConfiguration(backup.Spec.StorageRef.Name),
+				PluginConfiguration: barman.PluginConfiguration(barman.ObjectStoreName(c.Name(), backup.Spec.StorageRef.Name)),
 				Target:              cnpgv1.BackupTarget(backupCfg.Target),
 			}
 		}
@@ -163,7 +163,7 @@ func backupStorageBlocker(instance *corev1alpha1.Instance, cluster *cnpgv1.Clust
 		}
 	}
 	// The plugin writes base backups to the Cluster's WAL archive whatever storage the Backup names.
-	if barman.ArchiveObjectStoreName(cluster) != storageName {
+	if barman.ArchiveObjectStoreName(cluster) != barman.ObjectStoreName(instance.Name, storageName) {
 		return &controller.BackupExecutionStatus{
 			State:   backupv1alpha1.BackupStatePending,
 			Message: fmt.Sprintf("waiting for CloudNativePG cluster to archive to storage %q", storageName),

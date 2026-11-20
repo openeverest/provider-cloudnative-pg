@@ -48,7 +48,7 @@ manages pods directly — all lifecycle work is delegated to the operator.
 | provider-cloudnative-pg | OpenEverest | CloudNativePG | Kubernetes |
 |---|---|---|---|
 | `0.2.x` | `2.0.0-dev.2` | `1.29.x` | `1.30` – `1.34` |
-| `main` | `main` after `2.0.0-dev.4` (admission webhook, openeverest/openeverest#3362) | `1.30.x` | `1.34` – `1.36` |
+| `main` | `2.0.0-alpha.1` (Instance status as conditions, openeverest/openeverest#3652) | `1.30.x` | `1.34` – `1.36` |
 
 ## Capabilities
 
@@ -72,7 +72,7 @@ provider itself is covered under [Installation](#installation).
 | Connection pooling | ✅ | optional `proxy` component → CloudNativePG `Pooler` (PgBouncer, type `rw`); `parameters.readOnly` also creates a type `ro` Pooler; see [Connection pooling](#connection-pooling) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy` (all fields), or `parameters.affinity` — not both |
 | Pod priority | ✅ | `parameters.priorityClassName` → CloudNativePG `spec.priorityClassName`; the PriorityClass must exist, and changing it rolls the instance pods |
-| Monitoring | ✅ | Prometheus: a PodMonitor for the instance pods via `spec.topology.parameters.monitoring.prometheus`; requires the Prometheus Operator. See [Scrape metrics with Prometheus](#scrape-metrics-with-prometheus) |
+| Monitoring | ✅ | Metrics of the PostgreSQL pods published for monitoring extensions through `spec.monitoring.destinations`. See [Monitoring](#monitoring) |
 
 ### Extensions
 
@@ -228,12 +228,50 @@ Stateful workloads additionally report:
 | Persistent storage | ✅ | `spec.components.engine.storage` |
 | Storage expansion | ✅ | when the StorageClass allows volume expansion (`resizeInUseVolumes`) |
 | Separate WAL volume | ✅ | `spec.components.engine.parameters.walStorage` maps directly to CNPG `spec.walStorage` |
-| Backups (on demand) | ✅ | operator-native (`executionMode: ProviderManaged`) via the Barman Cloud Plugin; one backup storage per Instance (CNPG supports a single WAL archive) |
+| Backups (on demand) | ✅ | operator-native via the Barman Cloud Plugin; one backup storage per Instance (CNPG supports a single WAL archive) |
+| Backup storages | ✅ | the `s3` BackupStorageClass (AWS, MinIO, Ceph and other S3-compatible stores; not GCS); custom CA through `spec.tls.ca`, `insecureSkipVerify` is not supported by Barman |
 | Restore | ✅ | from a succeeded Backup via Barman |
 | Scheduled backups | ✅ | `spec.backup.storages[].schedules` → CNPG `ScheduledBackup`; mirrored as OpenEverest `Backup` CRs |
 | Schedule retention | ✅ | time-based recovery windows are delegated to CNPG/Barman via ObjectStore retentionPolicy; count-based retention is rejected |
 | Backup deletion | ✅ | `deletionPolicy: Delete` removes the Barman base backup; `Retain` removes only the CNPG Backup resource |
 | PITR | ✅ | restore to a point in time via `spec.dataSource` |
+
+### Backup storages
+
+The provider ships the `cnpg-barman-plugin` BackupClass, which writes to
+BackupStorages of the `s3` BackupStorageClass:
+
+```yaml
+apiVersion: backup.openeverest.io/v1alpha1
+kind: BackupStorage
+metadata:
+  name: s3
+spec:
+  backupStorageClassRef:
+    name: s3
+  location:
+    objectStore:
+      bucket: backups
+  parameters:
+    region: us-east-1
+    endpointURL: https://minio.example.com
+    implementation: minio
+  authentication:
+    mode: AccessKey
+    credentialsSecretRef:
+      name: s3-credentials # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  tls:
+    ca:
+      secretKeyRef:
+        name: s3-ca
+        key: ca.crt
+```
+
+Barman cannot skip certificate verification, so a storage with
+`tls.insecureSkipVerify: true` is incompatible with the class; trust a private
+CA through `tls.ca` instead. GCS is not supported through the S3 class.
+Restores read the source backup through a dedicated
+`<instance>-restore-source-<hash>` ObjectStore.
 
 ### Backup retention and deletion
 
@@ -250,10 +288,10 @@ specify the same duration or all omit retention (keep all). The window applies
 to that cluster's entire Barman archive, including on-demand backups and WAL,
 not independently to each schedule. Barman preserves the base backup needed to
 recover from the beginning of the window. Count retention is not supported.
-Instances in one namespace that use the same backup storage share its
-ObjectStore, so they must also agree on retention. An Instance whose retention
-would change the policy already stored is refused with a
-`BackupRetentionConflict` on its `BackupConfigured` condition.
+Each Instance gets its own ObjectStore per backup storage
+(`<instance>-<storage>-<hash>`), writing under the Instance's own path in the
+bucket (`<prefix>/backups/<namespace>/<instance>/<uid>/<storage>/`), so
+Instances sharing a backup storage keep independent retention.
 The OpenEverest dev.4 schedule form edits only count retention ("retention
 copies"), which this provider rejects. Leave copies at 0 and set time retention
 through the API or CLI.
@@ -331,6 +369,12 @@ helm install provider-cloudnative-pg \
   [Validation](#validation). Its serving certificate is generated by the chart and kept across
   upgrades; set `admission.certManager.enabled=true` to have cert-manager issue it, or supply
   one through `admission.certs`.
+- The chart installs a `ClusterInstancePreset` per topology, the starting points the UI offers
+  when you create an Instance in any namespace: `postgresql-replicaset` (3 nodes with 1 CPU,
+  4Gi and 25Gi each, TLS required). Change or disable it, or add your own, under `presets` in
+  the chart values; `provider.shortName` prefixes their names. Presets pin the provider's
+  default [version](#versions) bundle, which a provider upgrade moves with the catalog, and
+  reference no namespaced objects.
 
 > [!IMPORTANT]
 > Backups need the Barman Cloud Plugin. The plugin subchart is **enabled by default** and its
@@ -406,6 +450,10 @@ spec:
 
 Component names are defined by this provider — see [definition/provider.yaml](definition/provider.yaml).
 `spec.version` and `spec.topology` are optional; the provider defaults apply.
+CPU and memory requests and limits are required, CPU at most millicore precision, and a request
+above its limit is rejected. The UI takes CPU in cores, fractions included (`0.5`), PostgreSQL
+memory and the disks in Gi, and PgBouncer memory in Mi, and writes them as quantity strings; a
+value it did not change keeps its stored form (for example `3584Mi`).
 More examples live in [examples/](examples/), including
 [TimescaleDB](examples/instance-timescaledb.yaml),
 [pgvector](examples/instance-pgvector.yaml),
@@ -418,7 +466,9 @@ More examples live in [examples/](examples/), including
 
 ### Connection details
 
-Watch it come up and read the connection details:
+Watch it come up and read the connection details. They are published as soon
+as clients can connect, and kept current while a change rolls out; see
+[Instance status](#instance-status).
 
 ```bash
 kubectl get instance my-instance -w
@@ -457,31 +507,89 @@ is the `ca.crt` key in the `<cluster>-ca` Secret, or in the Secret named by
 `pg-connection-string` also accepts `sslmode=no-verify`, which encrypts
 without checking the certificate. That value is not a libpq `sslmode`.
 
-### Scrape metrics with Prometheus
+### Instance status
 
-Every CloudNativePG instance pod serves its metrics exporter on port `metrics` (9187).
-With the [Prometheus Operator](https://prometheus-operator.dev/) in the cluster, enable
-Prometheus (the **Monitoring → Prometheus** toggle in the UI) to get a PodMonitor
-(`<instance>-metrics`) that scrapes it, over HTTPS when
-`spec.components.engine.parameters.monitoring.tls.enabled` is set. `podMonitorLabels` lets
-your Prometheus `podMonitorSelector` pick it up. Turning it off removes the PodMonitor.
+`status.phase` is `Pending`, `Provisioned` or `Terminating`; the conditions
+carry the rest. The provider doesn't choose a phase. It reports what it reads
+from the CloudNativePG `Cluster` and the objects around it, and
+provider-runtime turns that into the Instance's conditions, the same way for
+every provider.
+
+```bash
+kubectl get instance my-instance   # the AVAILABLE and STATUS columns
+kubectl wait --for=condition=Ready instance/my-instance --timeout=10m
+```
+
+| Fact | How the provider determines it |
+|---|---|
+| **Converged** (becomes `Ready`) | CloudNativePG reports the cluster healthy, runs the image and the number of instances the `Cluster` asks for, and resizes no volume; the managed roles are reconciled, the extensions are created, every Pooler is active with all its PgBouncer pods ready, and the credentials Secret exists. The `Cluster` is read past the cache, so a status older than the change just applied isn't compared with the previous spec. Until then, the message says what is waited for, in CloudNativePG's words where it has any. |
+| **Available** | CloudNativePG names a primary, isn't changing it, and reports its pod ready; with a [`proxy`](#connection-pooling), a PgBouncer pod of the rw Pooler is ready too. It stays `True` while replicas restart. `False` with `NoPrimary`, `SwitchingPrimary`, `PrimaryNotReady`, `NoPgBouncerReady` or `Hibernated`; `Unknown` (`InstancesNotReported`) when CloudNativePG left the instance states out, never guessed from pod counts. |
+| **Problems** | A CloudNativePG phase that stops reconciliation: `Unrecoverable`, `ConfigurationRejected` (an invalid `Cluster` definition), `ImageCatalogInvalid`, `PluginFailed`, `ClusterObjectsNotCreated`, otherwise `EngineError`. Also `ManagedRoleFailed`, `PoolerFailed`, and `HibernatedOutsideOpenEverest` when the `cnpg.io/hibernation` annotation is set on the `Cluster`. |
+| **Terminal problem** | `Unrecoverable` only: the Instance reads as stalled at once. Every other problem is expected to clear, and stalls the Instance only once it has lasted 10 minutes. |
+| **Operations** | `Upgrading` while a new engine image rolls out (`RollingOutImage`, or `UpgradingMajorVersion`); `StorageResizing` while CloudNativePG reports volumes being resized. A new Instance being seeded from `spec.dataSource` is reported as `Restoring` by the runtime. |
+| **Connection details** | Published as soon as clients can connect, not only once the cluster has converged. |
+| **Desired pods** per component | What the Instance asks for: `engine` is `replicas`; `proxy` is its `replicas`, twice that with `readOnly`. Read from the Instance, not from the CloudNativePG objects, which may still describe the previous spec. |
+
+Limits of what the provider can know:
+
+- **CloudNativePG doesn't say which generation of the `Cluster` its status is
+  about.** The provider checks the status against the image and the number of
+  instances asked for. Right after any other change (resources, PostgreSQL
+  parameters), the Instance can read as `Ready` until CloudNativePG reacts.
+  For the same reason no CloudNativePG failure is
+  terminal except `Unrecoverable`: the failure still showing may be the one a
+  fix just applied is about to clear.
+- **Availability is as old as CloudNativePG's last pass over the cluster.** A
+  primary that went away since then still reads as available until
+  CloudNativePG looks again.
+- **`Upgrading` for a minor version is best effort.** CloudNativePG records the
+  new image as the cluster's before it restarts the first instance, so the
+  rollout is recognised from the reason it gives for a restart
+  ("is using a different image"). A reworded reason reads as a plain change
+  being applied.
+- **A hibernated `Cluster` is a problem, not a suspended Instance.** An
+  Instance can't ask to be suspended yet, so hibernation was set by someone
+  else, and only they can lift it. It isn't terminal: tools hibernate a
+  cluster for a short while, for example to swap its volumes.
+
+### Monitoring
+
+Monitoring is an OpenEverest extension. Every PostgreSQL pod serves the CloudNativePG metrics
+exporter on port `metrics` (9187, `/metrics`), over HTTPS when
+`spec.components.engine.parameters.monitoring.tls.enabled` is set. Once CloudNativePG has
+initialized the cluster, the provider publishes that endpoint in
+`Instance.status.monitoring.sources.metrics`, and a monitoring extension creates the scrape
+objects from it. To send an Instance's metrics somewhere:
+
+1. Install a monitoring extension, such as
+   [monitoring-prometheus](https://github.com/openeverest/monitoring-prometheus), which
+   installs its `MonitoringClass`.
+2. Create a `MonitoringDestination` of that class (in the UI: **Settings → Monitoring**).
+3. List it on the Instance (in the UI: the wizard's monitoring step, or **Edit monitoring** on
+   the overview):
 
 ```yaml
 spec:
-  topology:
-    type: replicaSet
-    parameters:
-      monitoring:
-        prometheus:
-          enabled: true
-          podMonitorLabels:
-            release: kube-prometheus-stack
+  monitoring:
+    destinations:
+      - name: metrics
+        destinationRef:
+          name: prometheus
 ```
 
-The PodMonitor carries `app.kubernetes.io/managed-by=everest` and
-`app.kubernetes.io/instance=<instance>`, which the OpenEverest metrics plugin uses to find it.
-Don't combine it with CloudNativePG's deprecated `monitoring.enablePodMonitor`, which would
-scrape every pod twice; the provider rejects that combination.
+The exporter always runs, so adding or removing a destination restarts nothing. The endpoint
+stays published without a destination, so a scraper OpenEverest doesn't configure (your own
+`PodMonitor`, a Datadog agent, Grafana Alloy) can read its pod selector, port, path, scheme and
+TLS settings from the Instance status. PgBouncer's metrics endpoint is not published yet.
+
+> [!IMPORTANT]
+> **Upgrading from 0.3.x.** The provider no longer creates a `PodMonitor` for
+> `spec.topology.parameters.monitoring.prometheus`, and deletes the one earlier releases created
+> (`<instance>-metrics`). The parameter is still accepted, with a deprecation warning, so
+> existing Instances keep working. CloudNativePG's deprecated
+> `spec.components.engine.parameters.monitoring.enablePodMonitor` is ignored too: its
+> `PodMonitor` would scrape every pod a second time. To keep collecting metrics, list a
+> destination in `spec.monitoring.destinations`.
 
 ### Query statistics
 
@@ -543,8 +651,8 @@ spec:
 |---|---|---|
 | `replicaSet` | ✅ | A CloudNativePG primary + standby cluster built from the `engine` component (default 3 instances) |
 
-The `proxy` component is optional. Prometheus scraping is a topology
-parameter (`spec.topology.parameters.monitoring.prometheus`), not a component.
+The `proxy` component is optional. Monitoring is configured on the Instance
+(`spec.monitoring.destinations`), not as a component; see [Monitoring](#monitoring).
 
 ### Connection pooling
 
@@ -571,9 +679,11 @@ the ro pooler (`<instance>-pooler-ro.<namespace>.svc`). Removing the component
 deletes both Poolers and points `host` back at `<instance>-rw` (and `host-ro`
 back at `<instance>-ro` when it is published).
 
-The Instance is Ready only once every configured Pooler is active and its
+The Instance is `Ready` only once every configured Pooler is active and its
 Deployment has `replicas` ready PgBouncer pods. Adding the component to a
-running instance returns it to Provisioning until then.
+running instance makes it not `Ready` until then. It stays `Available` while a
+PgBouncer pod of the rw Pooler is ready, and `host-ro` moves to the ro Pooler
+once one of its pods is.
 
 ```yaml
 spec:
@@ -637,7 +747,8 @@ The Instance "orders" is invalid: spec.components[engine].parameters.postgresql.
 
 - **Checked at admission:** the published parameter schemas, the version catalog and the
   provider's rules (resources, synchronous replication, extensions and the PostgreSQL version
-  they need, scheduling, proxy, backup schedules and retention, the data source, Prometheus).
+  they need, scheduling, proxy, backup schedules and retention, the data source). The deprecated
+  monitoring parameters are accepted with a warning; see [Monitoring](#monitoring).
   Rules about changes are checked against the stored `Instance`: an extension created in the
   database cannot be turned off, and creation-only extensions cannot be turned on later.
 - **Warnings:** changes that restart the instances, such as turning on an image-volume or
@@ -671,8 +782,8 @@ The technology-specific knobs worth knowing about:
 | `requireTLS` | `engine` | Reject unencrypted client connections; see [Require TLS](#require-tls) |
 | `replicationSlots` | `engine` | CloudNativePG `ReplicationSlotsConfiguration` (HA slots, user slot synchronization, logical slot failover); see [Logical replication slot failover](#logical-replication-slot-failover) |
 | `pgHBA` | `engine` | `pg_hba.conf` records, one per line; see [Client access rules](#client-access-rules-pg_hba) |
-| `monitoring` | `engine` | CloudNativePG monitoring configuration (custom queries, metrics TLS, …) |
-| `monitoring.prometheus` | topology | Create a PodMonitor for the instance; see [Scrape metrics with Prometheus](#scrape-metrics-with-prometheus) |
+| `monitoring` | `engine` | CloudNativePG monitoring configuration (custom queries, metrics TLS, …); `enablePodMonitor` is ignored, see [Monitoring](#monitoring) |
+| `monitoring.prometheus` | topology | Deprecated, no effect; see [Monitoring](#monitoring) |
 
 ### Start from a volume snapshot
 
@@ -707,8 +818,8 @@ spec:
   Everest checks that a user may read an Instance's `spec.dataSource`, not
   its engine parameters: the annotation, which Everest users can't set, is
   what lets an Instance start from a snapshot. Until it's there, nothing is
-  created and the Instance is `Failed`; the provider retries, so it starts
-  once the snapshot is annotated.
+  created and the Instance is not `Ready`, with the reason in its conditions;
+  the provider retries, so it starts once the snapshot is annotated.
 - The snapshot must hold PGDATA and WAL: it can't be combined with
   `walStorage`, nor with `spec.dataSource`. It's only read at creation and
   can't be changed afterwards.
@@ -906,7 +1017,7 @@ make generate           # RBAC, provider spec, Helm chart sync
 make run                # run the provider locally against the cluster (without the admission webhook)
 make test               # unit tests
 make test-integration   # chainsaw suites under test/integration/
-make test-integration-backup # backup integration suite against S3Mock
+make test-e2e-cluster-backup # backup e2e-cluster suite against S3Mock (needs OpenEverest core)
 make dev-down
 ```
 
@@ -936,8 +1047,8 @@ code generation, and the backup/restore interfaces are documented once for all p
 | `definition/` | Provider identity, component types, versions, topologies, backup classes |
 | `charts/provider-cloudnative-pg/` | Helm chart (`generated/` is produced by `make generate`) |
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
-| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `backup`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `tls-only`, `wal-storage` |
-| `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup-restore`, `backup-deletion` |
+| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `presets`, `tls-only`, `wal-storage` |
+| `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup`, `backup-restore`, `backup-deletion`, `monitoring` |
 | `test/testdata/` | Fixtures shared by the suites (S3Mock object store) |
 | `test/e2e/` | Playwright UI tests against the OpenEverest UI |
 | `test/vars.sh` | Pinned versions used by tests |
@@ -950,7 +1061,7 @@ code generation, and the backup/restore interfaces are documented once for all p
 - **Unit tests** — `make test`.
 - **Integration tests** — chainsaw suites under [test/integration/](test/integration/).
   Individual suites are also exposed as make targets (`make test-integration-core`,
-  `make test-integration-backup`, `make test-integration-core-replicaset`, `make test-integration-extensions`, …).
+  `make test-integration-core-replicaset`, `make test-integration-extensions`, …).
   The extension suites run a one-instance PostgreSQL and use each extension through `psql`;
   `extensions/pgcron-pgrepack` and `extensions/pgpartman` run two instances to check that pg_cron
   jobs and pg_partman maintenance resume after a switchover. `extensions/imagevolume`,
@@ -960,17 +1071,31 @@ code generation, and the backup/restore interfaces are documented once for all p
   `make test-integration` covers them (alone: `make test-integration-imagevolume`).
   `core/admission` (`make test-integration-core-admission`) checks the admission webhook and
   scales the provider down, so it runs alone.
+  `presets` (`make test-integration-presets`, needs `jq`) checks the chart's
+  `ClusterInstancePreset`s: each is admitted as an Instance spec, and an Instance created from
+  one, scaled down to a single small node, becomes Ready.
   `wal-storage` (`make test-integration-wal`, needs `jq`) grows the WAL volume. On a StorageClass
   without expansion, such as k3d's `local-path`, it uses an expandable copy and checks that the
   resize request reaches the WAL PVC; the physical resize is checked only where the default
   StorageClass expands volumes (e.g. a CSI driver with a resizer).
 - **E2E cluster tests** — chainsaw suites under [test/e2e-cluster/](test/e2e-cluster/) that run
-  user journeys on the full platform: the released OpenEverest core (server, controller and CRDs,
-  at the version pinned in `go.mod`) installed by `make install-openeverest`, plus this provider.
+  user journeys on the full platform: OpenEverest core (server, controller and CRDs) installed by
+  `make install-openeverest`, plus this provider. Until the next core release that is core `main`:
+  the [openeverest/helm-charts](https://github.com/openeverest/helm-charts) chart at
+  `OPENEVEREST_CHARTS_REF`, the image core's CI publishes from `main`, and the CRDs of the core
+  pinned in `go.mod`; `OPENEVEREST_CHARTS_REF=` installs the release instead.
+  `backup` (`make test-e2e-cluster-backup`) takes a scheduled and an on-demand backup, checks the
+  Instance's ObjectStore and its path in the bucket, and deletes a Backup with its data. It needs
+  core, which accepts the BackupClass and the BackupStorage.
   `backup-restore` writes data, takes a Backup, restores it into a new Instance through
   `spec.dataSource`, and checks the data. `backup-deletion` checks that schedule retention reaches
   the Barman ObjectStore, that deleting a `Retain` Backup keeps its objects in the object store, and
-  that deleting a `Delete` Backup removes them. Run with `make test-e2e-cluster`.
+  that deleting a `Delete` Backup removes them. `monitoring` (`make test-e2e-cluster-monitoring`)
+  binds an Instance to a test metrics class, standing in for the extension, and checks the class
+  compatibility, the binding, the published endpoint (scraped through the API server's pod
+  proxy), that the PodMonitor of earlier releases is deleted and none is created, and that
+  dropping the destination deletes the binding. It installs a minimal `PodMonitor` CRD only when
+  the Prometheus Operator's is absent. Run with `make test-e2e-cluster`.
 - **E2E UI tests** — Playwright tests under [test/e2e/](test/e2e/) drive the OpenEverest UI: they
   create a PostgreSQL instance through the provider's generated form, wait for it to be Ready, and
   delete it; a second test turns on **Separate WAL storage** and checks the WAL volume. Run with `make test-e2e` (installs Chromium for Playwright) against a UI at `EVEREST_URL` (default

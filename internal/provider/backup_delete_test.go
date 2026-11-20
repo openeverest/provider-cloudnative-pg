@@ -55,8 +55,8 @@ func TestBuildBackupDeletionJob(t *testing.T) {
 	job, err := buildBackupDeletionJob(
 		backup,
 		cnpgBackup,
-		objectStore,
-		&backupv1alpha1.BackupStorageS3Spec{Region: "us-east-1"},
+		objectStore.Spec.Configuration,
+		"us-east-1",
 	)
 	if err != nil {
 		t.Fatalf("buildBackupDeletionJob: %v", err)

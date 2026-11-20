@@ -3,24 +3,75 @@
 apiVersion: backup.openeverest.io/v1alpha1
 kind: BackupClass
 metadata:
+  annotations:
+    openeverest.io/provider-version: 0.3.4
   name: cnpg-barman-plugin
 spec:
+  backupStorageClasses:
+    - authModes:
+        - AccessKey
+      name: s3
+      parametersSchema:
+        openAPIV3Schema:
+          additionalProperties: false
+          properties:
+            endpointURL:
+              description: |-
+                EndpointURL is the URL of the S3 API, for example
+                https://s3.us-east-1.amazonaws.com. An http:// URL uses plain HTTP.
+              maxLength: 2048
+              pattern: ^https?://[^/?#@]+([/?#].*)?$
+              type: string
+            forcePathStyle:
+              description: |-
+                ForcePathStyle addresses the bucket in the URL path instead of the host
+                name, as most S3-compatible gateways require.
+              type: boolean
+            implementation:
+              description: |-
+                Implementation names the software serving the endpoint. Unset means
+                Amazon S3.
+              enum:
+                - aws
+                - minio
+                - ceph
+                - other
+              type: string
+            region:
+              description: Region of the bucket.
+              maxLength: 63
+              minLength: 1
+              type: string
+          required:
+            - endpointURL
+            - region
+          type: object
+      tls:
+        customCA: Supported
+        insecureSkipVerify: None
   description: CloudNativePG backups via the CNPG-I Barman Cloud Plugin (object-store WAL archiving and base backups).
   displayName: CNPG Barman Cloud Plugin
   executionMode: ProviderManaged
   parametersSchema:
     openAPIV3Schema:
+      description: |-
+        CnpgBarmanPluginBackupConfig is validated against Backup.spec.parameters and
+        per-schedule parameters. Maps to cnpgv1.BackupSpec fields for plugin backups.
       properties:
         target:
+          description: Target overrides the cluster default backup target for this run.
+          enum:
+            - primary
+            - prefer-standby
           type: string
       type: object
   providerManaged:
     limits:
       maxPITREnabledStorages: 1
       maxStorages: 1
+    providerRef:
+      name: provider-cloudnative-pg
     supportsPITR: true
-  supportedProviders:
-    - provider-cloudnative-pg
   uiSchema:
     backup:
       components:

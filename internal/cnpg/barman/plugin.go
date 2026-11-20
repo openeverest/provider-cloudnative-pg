@@ -8,11 +8,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 )
 
-func PluginConfiguration(storageName string) *cnpgv1.BackupPluginConfiguration {
+// PluginConfiguration returns the plugin configuration of a backup to the
+// ObjectStore named objectStore.
+func PluginConfiguration(objectStore string) *cnpgv1.BackupPluginConfiguration {
 	return &cnpgv1.BackupPluginConfiguration{
 		Name: PluginName,
 		Parameters: map[string]string{
-			PluginParameterObjectStore: storageName,
+			PluginParameterObjectStore: objectStore,
 		},
 	}
 }

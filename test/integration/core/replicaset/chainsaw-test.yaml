@@ -39,7 +39,7 @@ spec:
     #     - script:
     #         timeout: 60s
     #         content: >-
-    #           kubectl wait --for=jsonpath='{.status.phase}'=Ready
+    #           kubectl wait --for=condition=Ready
     #           instance/test-cnpg-cluster -n $NAMESPACE --timeout=60s
     #     - assert:
     #         timeout: 60s

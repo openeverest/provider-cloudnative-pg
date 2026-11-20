@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -63,6 +64,25 @@ func proxyParameters(proxy corev1alpha1.ComponentSpec) (components.PgBouncerPara
 		return params, fmt.Errorf("failed to decode proxy parameters: %w", err)
 	}
 	return params, nil
+}
+
+// proxyInstances is the number of PgBouncer pods each Pooler of the proxy
+// component runs.
+func proxyInstances(proxy corev1alpha1.ComponentSpec) int32 {
+	if proxy.Replicas != nil {
+		return *proxy.Replicas
+	}
+	return 1
+}
+
+// proxyPods is the number of PgBouncer pods the proxy component runs: those
+// of the rw Pooler, and as many again for the ro Pooler of readOnly.
+func proxyPods(proxy corev1alpha1.ComponentSpec) int32 {
+	pods := proxyInstances(proxy)
+	if params, err := proxyParameters(proxy); err == nil && params.ReadOnly {
+		pods *= 2
+	}
+	return pods
 }
 
 func validateProxy(instance *corev1alpha1.Instance) error {
@@ -151,10 +171,7 @@ func buildPooler(
 	name string,
 	poolerType cnpgv1.PoolerType,
 ) *cnpgv1.Pooler {
-	instances := int32(1)
-	if proxy.Replicas != nil {
-		instances = *proxy.Replicas
-	}
+	instances := proxyInstances(proxy)
 	pooler := &cnpgv1.Pooler{
 		ObjectMeta: c.ObjectMeta(name),
 		Spec: cnpgv1.PoolerSpec{
@@ -183,26 +200,61 @@ func buildPooler(
 	return pooler
 }
 
-// poolerBlocksReady keeps the Instance from becoming Ready until the Pooler(s)
-// are serving, points the primary connection at the rw pooler's Service, and
-// when readOnly is set points host-ro at the ro pooler's Service.
+// poolerObservation is what the Pooler(s) of the proxy component report.
+type poolerObservation struct {
+	// wait says what keeps the poolers from serving as the Instance asks,
+	// and is "" when nothing does.
+	wait string
+	// failure is what CloudNativePG reports about a failed Pooler.
+	failure string
+	// serving is true when the rw pooler has a ready PgBouncer pod, so its
+	// Service routes clients to the primary.
+	serving bool
+	// readOnlyServing is true when the ro pooler has a ready PgBouncer pod.
+	readOnlyServing bool
+}
+
+// observePoolers reads the Pooler(s) of the proxy component. It returns nil
+// for an Instance without one.
 //
 // The operator sets phase Active once the Pooler's prerequisites exist, and its
 // status.instances counts pods created, not pods ready. Readiness therefore
 // comes from the Deployment the operator names after the Pooler: its Service
-// only routes to ready pods. Without readOnly, host-r and host-ro stay on the
-// PostgreSQL Services.
-func poolerBlocksReady(c *controller.Context, details *controller.ConnectionDetails) (controller.Status, bool, error) {
+// only routes to ready pods.
+func observePoolers(c *controller.Context) (*poolerObservation, error) {
 	proxy, ok := c.Instance().Spec.Components[common.ComponentProxy]
 	if !ok {
-		return controller.Status{}, false, nil
+		return nil, nil
+	}
+	params, err := proxyParameters(proxy)
+	if err != nil {
+		return nil, err
 	}
 
-	status, blocked, err := waitPoolerReady(c, poolerName(c.Name()))
-	if err != nil || blocked {
-		return status, blocked, err
+	rw, err := observePooler(c, poolerName(c.Name()))
+	if err != nil {
+		return nil, err
+	}
+	o := &poolerObservation{wait: rw.wait, failure: rw.failure, serving: rw.ready > 0}
+	if !params.ReadOnly {
+		return o, nil
 	}
 
+	ro, err := observePooler(c, poolerROName(c.Name()))
+	if err != nil {
+		return nil, err
+	}
+	o.wait = cmp.Or(o.wait, ro.wait)
+	o.failure = cmp.Or(o.failure, ro.failure)
+	o.readOnlyServing = ro.ready > 0
+	return o, nil
+}
+
+// route points the connection details at the poolers: the primary connection
+// at the rw pooler's Service, and host-ro at the ro pooler's Service once it
+// serves. Without a ro pooler, host-r and host-ro stay on the PostgreSQL
+// Services.
+func (o *poolerObservation) route(c *controller.Context, details *controller.ConnectionDetails) {
 	// listen_port is forced to PgBouncerPort. The credential Secret's port is
 	// the PostgreSQL port, which is not where this Service listens.
 	host := serviceHost(poolerName(c.Name()), c.Namespace())
@@ -212,67 +264,65 @@ func poolerBlocksReady(c *controller.Context, details *controller.ConnectionDeta
 	details.URI = postgresURI(details.Username, details.Password, host, port,
 		details.AdditionalProperties["database"], details.AdditionalProperties["sslmode"])
 
-	params, err := proxyParameters(proxy)
-	if err != nil {
-		return controller.Status{}, true, err
-	}
-	if !params.ReadOnly {
-		return controller.Status{}, false, nil
-	}
-
-	status, blocked, err = waitPoolerReady(c, poolerROName(c.Name()))
-	if err != nil || blocked {
-		return status, blocked, err
+	if !o.readOnlyServing {
+		return
 	}
 	if details.AdditionalProperties == nil {
 		details.AdditionalProperties = map[string]string{}
 	}
 	details.AdditionalProperties[hostROProperty] = serviceHost(poolerROName(c.Name()), c.Namespace())
-	return controller.Status{}, false, nil
 }
 
-func waitPoolerReady(c *controller.Context, name string) (controller.Status, bool, error) {
+// poolerState is what one Pooler and its Deployment report.
+type poolerState struct {
+	wait    string
+	failure string
+	// ready is the number of ready PgBouncer pods.
+	ready int32
+}
+
+func observePooler(c *controller.Context, name string) (poolerState, error) {
 	pooler := &cnpgv1.Pooler{}
 	if err := c.Get(pooler, name); err != nil {
 		if apierrors.IsNotFound(err) {
-			return controller.Provisioning("waiting for the CloudNativePG pooler"), true, nil
+			return poolerState{wait: fmt.Sprintf("Waiting for the CloudNativePG Pooler %s to be created", name)}, nil
 		}
-		return controller.Status{}, true, fmt.Errorf("failed to get the CloudNativePG pooler: %w", err)
-	}
-	if pooler.Status.Phase == cnpgv1.PoolerPhaseFailed {
-		message := string(pooler.Status.Phase)
-		if pooler.Status.PhaseReason != "" {
-			message += ": " + pooler.Status.PhaseReason
-		}
-		return controller.Failed(message), true, nil
-	}
-	if pooler.Status.Phase != cnpgv1.PoolerPhaseActive {
-		message := "waiting for the CloudNativePG pooler"
-		if pooler.Status.Phase != "" {
-			message = fmt.Sprintf("%s (%s)", message, pooler.Status.Phase)
-		}
-		if pooler.Status.PhaseReason != "" {
-			message += ": " + pooler.Status.PhaseReason
-		}
-		return controller.Provisioning(message), true, nil
+		return poolerState{}, fmt.Errorf("failed to get the CloudNativePG pooler: %w", err)
 	}
 
+	var state poolerState
+	deployment := &appsv1.Deployment{}
+	deploymentFound := true
+	if err := c.Get(deployment, name); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return poolerState{}, fmt.Errorf("failed to get the PgBouncer deployment: %w", err)
+		}
+		deploymentFound = false
+	}
+	state.ready = deployment.Status.ReadyReplicas
+
+	phase := string(pooler.Status.Phase)
+	if pooler.Status.PhaseReason != "" {
+		phase += ": " + pooler.Status.PhaseReason
+	}
 	want := int32(1)
 	if pooler.Spec.Instances != nil {
 		want = *pooler.Spec.Instances
 	}
-	deployment := &appsv1.Deployment{}
-	if err := c.Get(deployment, name); err != nil {
-		if apierrors.IsNotFound(err) {
-			return controller.Provisioning("waiting for the PgBouncer deployment"), true, nil
+	switch {
+	case pooler.Status.Phase == cnpgv1.PoolerPhaseFailed:
+		state.failure = fmt.Sprintf("CloudNativePG reports Pooler %s as %s", name, phase)
+	case pooler.Status.Phase != cnpgv1.PoolerPhaseActive:
+		state.wait = fmt.Sprintf("Waiting for the CloudNativePG Pooler %s", name)
+		if phase != "" {
+			state.wait += " (" + phase + ")"
 		}
-		return controller.Status{}, true, fmt.Errorf("failed to get the PgBouncer deployment: %w", err)
+	case !deploymentFound:
+		state.wait = fmt.Sprintf("Waiting for the PgBouncer Deployment %s", name)
+	case state.ready < want:
+		state.wait = fmt.Sprintf("Waiting for the PgBouncer pods of %s (%d of %d ready)", name, state.ready, want)
 	}
-	if deployment.Status.ReadyReplicas < want {
-		return controller.Provisioning(fmt.Sprintf("waiting for PgBouncer pods (%d/%d ready)",
-			deployment.Status.ReadyReplicas, want)), true, nil
-	}
-	return controller.Status{}, false, nil
+	return state, nil
 }
 
 // instanceOfPoolerDeployment maps the PgBouncer Deployment the operator creates

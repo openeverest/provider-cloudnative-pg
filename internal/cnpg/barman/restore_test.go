@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	barmancloudv1 "github.com/cloudnative-pg/plugin-barman-cloud/api/v1"
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -20,14 +21,11 @@ import (
 )
 
 func TestBuildRecoveryConfig(t *testing.T) {
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{
-		corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
-	} {
-		if err := add(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
+	const (
+		instanceLocation = "team/backups/ns/pg/uid-1/s3"
+		backupLocation   = "team/backups/ns/origin-cluster/uid-0/s3"
+	)
+	restoreSource := ObjectStoreName("pg", RestoreSourceRole)
 
 	targetTime := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 
@@ -39,7 +37,7 @@ func TestBuildRecoveryConfig(t *testing.T) {
 		wantWait   string
 		wantErr    string
 		wantBackup string
-		wantStore  string
+		wantPath   string
 		wantServer string
 		wantTime   string
 	}{
@@ -55,7 +53,7 @@ func TestBuildRecoveryConfig(t *testing.T) {
 					Date:           &targetTime,
 				},
 			},
-			wantStore:  "s3",
+			wantPath:   "s3://backups/" + instanceLocation + "/",
 			wantServer: "pg",
 			wantTime:   "2026-01-02T03:04:05Z",
 		},
@@ -131,7 +129,7 @@ func TestBuildRecoveryConfig(t *testing.T) {
 				&backupv1alpha1.Backup{
 					ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: testNamespace},
 					Spec:       backupv1alpha1.BackupSpec{StorageRef: commonv1alpha1.ObjectRef{Name: "s3"}},
-					Status:     backupv1alpha1.BackupStatus{State: backupv1alpha1.BackupStateSucceeded},
+					Status:     backupv1alpha1.BackupStatus{State: backupv1alpha1.BackupStateSucceeded, Path: backupLocation},
 				},
 				&cnpgv1.Backup{
 					ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: testNamespace},
@@ -144,7 +142,7 @@ func TestBuildRecoveryConfig(t *testing.T) {
 				},
 			},
 			wantBackup: "20260102T030405",
-			wantStore:  "s3",
+			wantPath:   "s3://backups/" + backupLocation + "/",
 			wantServer: "origin-cluster",
 		},
 	}
@@ -152,12 +150,12 @@ func TestBuildRecoveryConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			instance := &corev1alpha1.Instance{
-				ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace, UID: "uid-1"},
 				Spec:       corev1alpha1.InstanceSpec{DataSource: tt.dataSource},
+				Status:     recordedLocation("s3", instanceLocation),
 			}
-			objects := append([]client.Object{instance}, tt.objects...)
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-			c := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+			objects := append([]client.Object{testBackupStorage("s3", minioParameters, nil)}, tt.objects...)
+			c, cl := storageTestContext(t, instance, objects...)
 
 			recovery, external, err := BuildRecoveryConfig(c, tt.custom)
 			if tt.wantWait != "" {
@@ -195,8 +193,15 @@ func TestBuildRecoveryConfig(t *testing.T) {
 			if external.PluginConfiguration == nil {
 				t.Fatal("expected plugin configuration on external cluster")
 			}
-			if got := external.PluginConfiguration.Parameters[PluginParameterObjectStore]; got != tt.wantStore {
-				t.Fatalf("objectStore = %q, want %q", got, tt.wantStore)
+			if got := external.PluginConfiguration.Parameters[PluginParameterObjectStore]; got != restoreSource {
+				t.Fatalf("objectStore = %q, want %q", got, restoreSource)
+			}
+			store := &barmancloudv1.ObjectStore{}
+			if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: restoreSource}, store); err != nil {
+				t.Fatalf("get restore source ObjectStore: %v", err)
+			}
+			if got := store.Spec.Configuration.DestinationPath; got != tt.wantPath {
+				t.Fatalf("destinationPath = %q, want %q", got, tt.wantPath)
 			}
 			if got := external.PluginConfiguration.Parameters["serverName"]; got != tt.wantServer {
 				t.Fatalf("serverName = %q, want %q", got, tt.wantServer)
@@ -206,16 +211,9 @@ func TestBuildRecoveryConfig(t *testing.T) {
 }
 
 func TestBuildRecoveryConfigPropagatesInitDB(t *testing.T) {
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{
-		corev1alpha1.AddToScheme, backupv1alpha1.AddToScheme, cnpgv1.AddToScheme,
-	} {
-		if err := add(scheme); err != nil {
-			t.Fatal(err)
-		}
-	}
 	instance := &corev1alpha1.Instance{
-		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace, UID: "uid-1"},
+		Status:     recordedLocation("s3", "team/backups/ns/pg/uid-1/s3"),
 		Spec: corev1alpha1.InstanceSpec{
 			DataSource: &backupv1alpha1.DataSource{
 				Type: backupv1alpha1.DataSourceTypePointInTime,
@@ -227,8 +225,7 @@ func TestBuildRecoveryConfigPropagatesInitDB(t *testing.T) {
 			},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
-	c := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
+	c, _ := storageTestContext(t, instance, testBackupStorage("s3", minioParameters, nil))
 	custom := components.CNPGCustomSpec{
 		Bootstrap: &components.BootstrapConfiguration{
 			InitDB: &cnpgv1.BootstrapInitDB{Database: "appdb", Owner: "appuser"},
@@ -279,4 +276,12 @@ func (c errClient) Get(ctx context.Context, key client.ObjectKey, obj client.Obj
 		return c.err
 	}
 	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// recordedLocation is the status of an Instance that writes its backups of
+// storage under location.
+func recordedLocation(storage, location string) corev1alpha1.InstanceStatus {
+	return corev1alpha1.InstanceStatus{Backup: &corev1alpha1.InstanceBackupStatus{
+		Storages: []corev1alpha1.InstanceBackupStorageStatus{{Name: storage, Location: location}},
+	}}
 }

@@ -19,7 +19,8 @@ package provider
 // =============================================================================
 // +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupclasses;backupstorageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupclasses/status,verbs=patch
 // +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupstorages,verbs=get;list;watch
 // +kubebuilder:rbac:groups=backup.openeverest.io,resources=restores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=backup.openeverest.io,resources=restores/status,verbs=get;update;patch
@@ -48,7 +49,8 @@ package provider
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=backups/status,verbs=get
 // +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=scheduledbackups,verbs=get;list;watch;create;update;patch;delete
 
-// Barman Cloud Plugin ObjectStore CRs (one per OpenEverest BackupStorage):
+// Barman Cloud Plugin ObjectStore CRs (one per Instance and BackupStorage, and
+// one per Instance restoring from a backup):
 // +kubebuilder:rbac:groups=barmancloud.cnpg.io,resources=objectstores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=barmancloud.cnpg.io,resources=objectstores/status,verbs=get
 
@@ -64,8 +66,15 @@ package provider
 // PgBouncer Deployments the operator creates for a Pooler (readiness in Status()):
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 
-// Prometheus Operator PodMonitors (spec.topology.parameters.monitoring.prometheus):
-// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
+// Monitoring contract: the runtime watches the Instances' bindings and the
+// destinations and classes they reference, and reads the kube-system
+// namespace UID that identifies the cluster in the published sources.
+// +kubebuilder:rbac:groups=monitoring.openeverest.io,resources=monitoringclasses;monitoringdestinations;monitoringbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=monitoring.openeverest.io,resources=monitoringbindings/status,verbs=patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
+
+// The PodMonitor earlier releases created, deleted on upgrade:
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=delete
 
 // ConfigMaps with the exporter queries for pg_stat_statements:
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;update;patch;delete
