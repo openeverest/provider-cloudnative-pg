@@ -255,21 +255,6 @@ extensionCatalog:
           sqlVersion: "5.5.0"
           image:
             reference: ghcr.io/solanicaio/pg-partman:5.5.0-202611171122-18-trixie@sha256:aec9d402493fb6cd0cbb21e5ef4db3ae9ada6862a49c49b9d2fb0fbf4720aa80
-    - major: 19
-      image: ghcr.io/cloudnative-pg/postgresql:19.0-standard-trixie
-      extensions:
-        - name: pg-cron
-          sqlVersion: "1.6"
-          image:
-            reference: ghcr.io/solanicaio/pg-cron:1.6.8-19-trixie
-        - name: pg-repack
-          sqlVersion: "1.5.3"
-          image:
-            reference: ghcr.io/solanicaio/pg-repack:1.5.3-19-trixie
-        - name: pg-partman
-          sqlVersion: "5.5.0"
-          image:
-            reference: ghcr.io/solanicaio/pg-partman:5.5.0-19-trixie
 
 # -- Additional environment variables to set on the provider container
 extraEnv: []

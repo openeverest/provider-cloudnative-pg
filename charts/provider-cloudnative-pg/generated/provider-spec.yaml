@@ -6,8 +6,6 @@ spec:
     postgresql:
       defaultVersion: "18.7"
       versions:
-        - image: ghcr.io/cloudnative-pg/postgresql:19.0-standard-trixie
-          version: "19.0"
         - image: ghcr.io/cloudnative-pg/postgresql:14.23-standard-trixie
           version: "14.23"
         - image: ghcr.io/cloudnative-pg/postgresql:15.18-standard-trixie
@@ -2005,9 +2003,6 @@ spec:
         - pooler
         - advanced
   versions:
-    - components:
-        engine: "19.0"
-      name: "19.0"
     - components:
         engine: "18.7"
       name: "18.7"

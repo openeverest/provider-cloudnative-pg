@@ -115,9 +115,9 @@ annotations.
 
 | Extension | Toggle | Status | Enable on a running instance | Disable | Notes |
 |---|---|---|---|---|---|
-| pgvector | `pgvector` | ✅ | ✅ no restart | ❌ | PG 14–19, bundled in the `standard` images: no image change. See [examples/instance-pgvector.yaml](examples/instance-pgvector.yaml) |
-| pgAudit | `pgaudit` | ✅ | ✅ restarts | ✅ the operator drops it | PG 14–19, bundled; sets `pgaudit.log: "ddl, role"` unless a value is set in `postgresql.parameters`, and the operator then preloads it and creates it in every database |
-| pg_stat_statements | `pgStatStatements` | ✅ on by default | ✅ restarts | ✅ restarts, the operator drops it | PG 14–19, bundled; on for new instances and exported as metrics. See [Query statistics](#query-statistics) |
+| pgvector | `pgvector` | ✅ | ✅ no restart | ❌ | PG 14–18, bundled in the `standard` images: no image change. See [examples/instance-pgvector.yaml](examples/instance-pgvector.yaml) |
+| pgAudit | `pgaudit` | ✅ | ✅ restarts | ✅ the operator drops it | PG 14–18, bundled; sets `pgaudit.log: "ddl, role"` unless a value is set in `postgresql.parameters`, and the operator then preloads it and creates it in every database |
+| pg_stat_statements | `pgStatStatements` | ✅ on by default | ✅ restarts | ✅ restarts, the operator drops it | PG 14–18, bundled; on for new instances and exported as metrics. See [Query statistics](#query-statistics) |
 | TimescaleDB OSS | `timescaledb` | ✅ | ❌ creation only ¹ | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded; PostgreSQL **18.6–18.7**. See [examples/instance-timescaledb.yaml](examples/instance-timescaledb.yaml) |
 | TimescaleDB Community ³ | `timescaledbCommunity` | ✅ | ❌ creation only ¹ | ❌ | Image volume from [solanicaio/postgresql-extensions](https://github.com/solanicaio/postgresql-extensions), preloaded; PostgreSQL **18.6+**; not together with `timescaledb`. See [examples/instance-timescaledb-community.yaml](examples/instance-timescaledb-community.yaml) |
 | PostGIS | `postgis` | ✅ | ✅ restarts | ❌ | Image volume |

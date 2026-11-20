@@ -13,8 +13,6 @@ componentTypes:
   postgresql:
     defaultVersion: "18.7"
     versions:
-      - version: "19.0"
-        image: ghcr.io/cloudnative-pg/postgresql:19.0-standard-trixie
       - version: "14.23"
         image: ghcr.io/cloudnative-pg/postgresql:14.23-standard-trixie
       - version: "15.18"
@@ -38,9 +36,6 @@ componentTypes:
 # Top-level defaultVersion is used when spec.version is omitted.
 defaultVersion: "18.7"
 versions:
-  - name: "19.0"
-    components:
-      engine: "19.0"
   - name: "18.7"
     components:
       engine: "18.7"
