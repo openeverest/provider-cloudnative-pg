@@ -70,6 +70,15 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		if !ok {
 			return controller.Provisioning("waiting to get CloudNativePG credentials secret"), nil
 		}
+		// With a proxy, connection details point at the pooler; the engine
+		// exposure Service is still created for direct access but does not gate Ready.
+		if _, hasProxy := c.Instance().Spec.Components[common.ComponentProxy]; !hasProxy {
+			if pendingMsg, err := applyServiceExposure(c, engine.Service, &details); err != nil {
+				return controller.Status{}, err
+			} else if pendingMsg != "" {
+				return controller.Provisioning(pendingMsg), nil
+			}
+		}
 		status, blocked, err := poolerBlocksReady(c, &details)
 		if err != nil {
 			return controller.Status{}, err

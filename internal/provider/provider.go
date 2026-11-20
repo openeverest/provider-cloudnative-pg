@@ -50,6 +50,10 @@ func New() *Provider {
 				controller.WatchOwned(&cnpgv1.Pooler{}),
 				controller.WatchExternal(&appsv1.Deployment{},
 					handler.EnqueueRequestsFromMapFunc(instanceOfPoolerDeployment)),
+				// Connection details publish the LoadBalancer address or NodePort
+				// once the managed exposure Service is assigned.
+				controller.WatchExternal(&corev1.Service{},
+					handler.EnqueueRequestsFromMapFunc(instanceOfManagedService)),
 				controller.WatchOwned(&barmancloudv1.ObjectStore{}),
 				controller.WatchOwned(&cnpgv1.ScheduledBackup{}),
 			},
@@ -107,6 +111,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if custom.Managed != nil {
 		pg.Spec.Managed = custom.Managed
 	}
+	applyService(pg, engine.Service)
 
 	if custom.Affinity != nil {
 		pg.Spec.Affinity = *custom.Affinity
