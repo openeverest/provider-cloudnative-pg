@@ -30,7 +30,8 @@ kind: Instance
 metadata:
   name: pg-mon
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
   monitoring:
     (destinations[?name == 'metrics'] | [0]):
       mode: ExtensionManaged

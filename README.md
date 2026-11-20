@@ -48,7 +48,7 @@ manages pods directly — all lifecycle work is delegated to the operator.
 | provider-cloudnative-pg | OpenEverest | CloudNativePG | Kubernetes |
 |---|---|---|---|
 | `0.2.x` | `2.0.0-dev.2` | `1.29.x` | `1.30` – `1.34` |
-| `main` | `main` after `2.0.0-dev.4` (admission webhook, openeverest/openeverest#3362) | `1.30.x` | `1.34` – `1.36` |
+| `main` | `2.0.0-alpha.1` (Instance status as conditions, openeverest/openeverest#3652) | `1.30.x` | `1.34` – `1.36` |
 
 ## Capabilities
 
@@ -466,7 +466,9 @@ More examples live in [examples/](examples/), including
 
 ### Connection details
 
-Watch it come up and read the connection details:
+Watch it come up and read the connection details. They are published as soon
+as clients can connect, and kept current while a change rolls out; see
+[Instance status](#instance-status).
 
 ```bash
 kubectl get instance my-instance -w
@@ -504,6 +506,51 @@ is the `ca.crt` key in the `<cluster>-ca` Secret, or in the Secret named by
 `sslrootcert` with `sslmode=verify-full` to authenticate the server.
 `pg-connection-string` also accepts `sslmode=no-verify`, which encrypts
 without checking the certificate. That value is not a libpq `sslmode`.
+
+### Instance status
+
+`status.phase` is `Pending`, `Provisioned` or `Terminating`; the conditions
+carry the rest. The provider doesn't choose a phase. It reports what it reads
+from the CloudNativePG `Cluster` and the objects around it, and
+provider-runtime turns that into the Instance's conditions, the same way for
+every provider.
+
+```bash
+kubectl get instance my-instance   # the AVAILABLE and STATUS columns
+kubectl wait --for=condition=Ready instance/my-instance --timeout=10m
+```
+
+| Fact | How the provider determines it |
+|---|---|
+| **Converged** (becomes `Ready`) | CloudNativePG reports the cluster healthy, runs the image and the number of instances the `Cluster` asks for, and resizes no volume; the managed roles are reconciled, the extensions are created, every Pooler is active with all its PgBouncer pods ready, and the credentials Secret exists. The `Cluster` is read past the cache, so a status older than the change just applied isn't compared with the previous spec. Until then, the message says what is waited for, in CloudNativePG's words where it has any. |
+| **Available** | CloudNativePG names a primary, isn't changing it, and reports its pod ready; with a [`proxy`](#connection-pooling), a PgBouncer pod of the rw Pooler is ready too. It stays `True` while replicas restart. `False` with `NoPrimary`, `SwitchingPrimary`, `PrimaryNotReady`, `NoPgBouncerReady` or `Hibernated`; `Unknown` (`InstancesNotReported`) when CloudNativePG left the instance states out, never guessed from pod counts. |
+| **Problems** | A CloudNativePG phase that stops reconciliation: `Unrecoverable`, `ConfigurationRejected` (an invalid `Cluster` definition), `ImageCatalogInvalid`, `PluginFailed`, `ClusterObjectsNotCreated`, otherwise `EngineError`. Also `ManagedRoleFailed`, `PoolerFailed`, and `HibernatedOutsideOpenEverest` when the `cnpg.io/hibernation` annotation is set on the `Cluster`. |
+| **Terminal problem** | `Unrecoverable` only: the Instance reads as stalled at once. Every other problem is expected to clear, and stalls the Instance only once it has lasted 10 minutes. |
+| **Operations** | `Upgrading` while a new engine image rolls out (`RollingOutImage`, or `UpgradingMajorVersion`); `StorageResizing` while CloudNativePG reports volumes being resized. A new Instance being seeded from `spec.dataSource` is reported as `Restoring` by the runtime. |
+| **Connection details** | Published as soon as clients can connect, not only once the cluster has converged. |
+| **Desired pods** per component | What the Instance asks for: `engine` is `replicas`; `proxy` is its `replicas`, twice that with `readOnly`. Read from the Instance, not from the CloudNativePG objects, which may still describe the previous spec. |
+
+Limits of what the provider can know:
+
+- **CloudNativePG doesn't say which generation of the `Cluster` its status is
+  about.** The provider checks the status against the image and the number of
+  instances asked for. Right after any other change (resources, PostgreSQL
+  parameters), the Instance can read as `Ready` until CloudNativePG reacts.
+  For the same reason no CloudNativePG failure is
+  terminal except `Unrecoverable`: the failure still showing may be the one a
+  fix just applied is about to clear.
+- **Availability is as old as CloudNativePG's last pass over the cluster.** A
+  primary that went away since then still reads as available until
+  CloudNativePG looks again.
+- **`Upgrading` for a minor version is best effort.** CloudNativePG records the
+  new image as the cluster's before it restarts the first instance, so the
+  rollout is recognised from the reason it gives for a restart
+  ("is using a different image"). A reworded reason reads as a plain change
+  being applied.
+- **A hibernated `Cluster` is a problem, not a suspended Instance.** An
+  Instance can't ask to be suspended yet, so hibernation was set by someone
+  else, and only they can lift it. It isn't terminal: tools hibernate a
+  cluster for a short while, for example to swap its volumes.
 
 ### Monitoring
 
@@ -632,9 +679,11 @@ the ro pooler (`<instance>-pooler-ro.<namespace>.svc`). Removing the component
 deletes both Poolers and points `host` back at `<instance>-rw` (and `host-ro`
 back at `<instance>-ro` when it is published).
 
-The Instance is Ready only once every configured Pooler is active and its
+The Instance is `Ready` only once every configured Pooler is active and its
 Deployment has `replicas` ready PgBouncer pods. Adding the component to a
-running instance returns it to Provisioning until then.
+running instance makes it not `Ready` until then. It stays `Available` while a
+PgBouncer pod of the rw Pooler is ready, and `host-ro` moves to the ro Pooler
+once one of its pods is.
 
 ```yaml
 spec:
@@ -769,8 +818,8 @@ spec:
   Everest checks that a user may read an Instance's `spec.dataSource`, not
   its engine parameters: the annotation, which Everest users can't set, is
   what lets an Instance start from a snapshot. Until it's there, nothing is
-  created and the Instance is `Failed`; the provider retries, so it starts
-  once the snapshot is annotated.
+  created and the Instance is not `Ready`, with the reason in its conditions;
+  the provider retries, so it starts once the snapshot is annotated.
 - The snapshot must hold PGDATA and WAL: it can't be combined with
   `walStorage`, nor with `spec.dataSource`. It's only read at creation and
   can't be changed afterwards.

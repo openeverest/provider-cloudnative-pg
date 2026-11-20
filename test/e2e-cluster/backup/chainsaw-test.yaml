@@ -40,7 +40,7 @@ spec:
               # condition before it exists fails at once with NotFound.
               kubectl wait --for=create cluster/backup-test -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=condition=Ready cluster/backup-test -n "$NAMESPACE" --timeout=480s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/backup-test -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/backup-test -n "$NAMESPACE" --timeout=60s
       catch:
         - script:
             content: kubectl get instance,cluster,scheduledbackup,pod -n "$NAMESPACE" -o wide

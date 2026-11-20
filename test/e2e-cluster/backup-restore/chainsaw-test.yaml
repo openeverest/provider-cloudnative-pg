@@ -48,7 +48,7 @@ spec:
               set -e
               kubectl wait --for=create cluster/pg-src -n "$NAMESPACE" --timeout=60s
               kubectl wait --for=condition=Ready cluster/pg-src -n "$NAMESPACE" --timeout=480s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pg-src -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready instance/pg-src -n "$NAMESPACE" --timeout=60s
 
     - name: seed-source-data
       try:
@@ -79,7 +79,7 @@ spec:
               kubectl wait --for=condition=Ready cluster/pg-dest -n "$NAMESPACE" --timeout=480s
               kubectl wait --for=condition=DataSourceReady instance/pg-dest -n "$NAMESPACE" --timeout=120s
               kubectl wait --for=jsonpath='{.status.state}'=Succeeded restore.backup.openeverest.io/pg-dest-datasource -n "$NAMESPACE" --timeout=60s
-              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/pg-dest -n "$NAMESPACE" --timeout=120s
+              kubectl wait --for=condition=Ready instance/pg-dest -n "$NAMESPACE" --timeout=120s
 
     - name: verify-restored-data
       try:
