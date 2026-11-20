@@ -1,0 +1,165 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# ClusterIP is the default (no extra managed Service). Switching to LoadBalancer
+# creates <instance>-rw-lb via CNPG managed.services.additional (k3d servicelb).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-exposure
+spec:
+  timeouts:
+    cleanup: 3m
+  steps:
+    - name: reject-invalid-service
+      try:
+        - script:
+            content: kubectl apply --dry-run=server -n "$NAMESPACE" -f 10-invalid-externalname.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].service.serviceType')): true
+        - script:
+            content: kubectl apply --dry-run=server -n "$NAMESPACE" -f 11-invalid-conflict.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].parameters.managed.services.additional')): true
+        - script:
+            content: kubectl apply --dry-run=server -n "$NAMESPACE" -f 12-invalid-sourcerange.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].service.loadBalancerService.sourceRanges')): true
+
+    - name: create-clusterip-instance
+      try:
+        - apply:
+            file: 00-instance.yaml
+        - script:
+            timeout: 6m
+            content: |
+              set -eu
+              kubectl wait --for=create cluster/exposed -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready cluster/exposed -n "$NAMESPACE" --timeout=300s
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/exposed -n "$NAMESPACE" --timeout=120s
+              # ClusterIP: no additional managed Service.
+              if kubectl get svc exposed-rw-lb -n "$NAMESPACE" 2>/dev/null; then
+                echo "exposed-rw-lb should not exist for ClusterIP"; exit 1
+              fi
+              test "$(kubectl get cluster exposed -n "$NAMESPACE" -o jsonpath='{.spec.managed.services.additional}')" = ""
+              secret="$(kubectl get instance exposed -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+              test "$host" = "exposed-rw.$NAMESPACE.svc"
+      catch:
+        - script:
+            content: kubectl get instance,cluster,svc,pod -n "$NAMESPACE" -o wide
+        - script:
+            content: kubectl get cluster exposed -n "$NAMESPACE" -o yaml
+
+    - name: switch-to-loadbalancer
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              kubectl patch instance exposed -n "$NAMESPACE" --type=merge -p '{"spec":{"components":{"engine":{"service":{"serviceType":"LoadBalancer","annotations":{"test.openeverest.io/expose":"true"}}}}}}'
+              kubectl wait --for=create svc/exposed-rw-lb -n "$NAMESPACE" --timeout=120s
+              for _ in $(seq 1 60); do
+                type="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.spec.type}')"
+                if [ "$type" = LoadBalancer ]; then
+                  break
+                fi
+                sleep 2
+              done
+              test "$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.spec.type}')" = LoadBalancer
+              test "$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.test\.openeverest\.io/expose}')" = true
+              test "$(kubectl get cluster exposed -n "$NAMESPACE" -o jsonpath='{.spec.managed.services.additional[0].selectorType}')" = rw
+              test "$(kubectl get cluster exposed -n "$NAMESPACE" -o jsonpath='{.spec.managed.services.additional[0].serviceTemplate.metadata.name}')" = exposed-rw-lb
+              # k3d servicelb assigns an address; connection Secret should publish it.
+              for _ in $(seq 1 60); do
+                ip="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+                hostname="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+                if [ -n "$ip" ] || [ -n "$hostname" ]; then
+                  break
+                fi
+                sleep 2
+              done
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/exposed -n "$NAMESPACE" --timeout=120s
+              secret="$(kubectl get instance exposed -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+              host_lb="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-lb}' | base64 -d)"
+              ip="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+              hostname="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+              test "$host_lb" = "exposed-rw-lb.$NAMESPACE.svc"
+              if [ -n "$hostname" ]; then
+                test "$host" = "$hostname"
+              elif [ -n "$ip" ]; then
+                test "$host" = "$ip"
+              else
+                echo "load balancer has no address yet"; exit 1
+              fi
+      catch:
+        - script:
+            content: kubectl get instance,cluster,svc -n "$NAMESPACE" -o wide
+        - script:
+            content: kubectl get cluster exposed -n "$NAMESPACE" -o yaml
+        - script:
+            content: kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o yaml
+
+    - name: switch-to-nodeport
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl patch instance exposed -n "$NAMESPACE" --type=merge -p '{"spec":{"components":{"engine":{"service":{"serviceType":"NodePort"}}}}}'
+              kubectl wait --for=create svc/exposed-rw-lb -n "$NAMESPACE" --timeout=120s
+              for _ in $(seq 1 60); do
+                node_port="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}')"
+                if [ -n "$node_port" ] && [ "$node_port" != "0" ]; then
+                  break
+                fi
+                sleep 2
+              done
+              node_port="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}')"
+              test -n "$node_port" && test "$node_port" != "0"
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/exposed -n "$NAMESPACE" --timeout=120s
+              secret="$(kubectl get instance exposed -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+              host_lb="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-lb}' | base64 -d)"
+              published_node_port="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.nodePort}' | base64 -d)"
+              test "$host" = "exposed-rw.$NAMESPACE.svc"
+              test "$host_lb" = "exposed-rw-lb.$NAMESPACE.svc"
+              test "$published_node_port" = "$node_port"
+      catch:
+        - script:
+            content: kubectl get instance,cluster,svc -n "$NAMESPACE" -o wide
+        - script:
+            content: kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o yaml
+
+    - name: switch-back-to-clusterip
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl patch instance exposed -n "$NAMESPACE" --type=merge -p '{"spec":{"components":{"engine":{"service":{"serviceType":"ClusterIP"}}}}}'
+              for _ in $(seq 1 60); do
+                if ! kubectl get svc exposed-rw-lb -n "$NAMESPACE" 2>/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+              if kubectl get svc exposed-rw-lb -n "$NAMESPACE" 2>/dev/null; then
+                echo "exposed-rw-lb should be gone after ClusterIP"; exit 1
+              fi
+              kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/exposed -n "$NAMESPACE" --timeout=120s
+              secret="$(kubectl get instance exposed -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
+              test "$host" = "exposed-rw.$NAMESPACE.svc"
+              # host-lb / nodePort must not linger after ClusterIP.
+              if kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-lb}' | grep -q .; then
+                echo "host-lb should be absent for ClusterIP"; exit 1
+              fi
+              if kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.nodePort}' | grep -q .; then
+                echo "nodePort should be absent for ClusterIP"; exit 1
+              fi
+      catch:
+        - script:
+            content: kubectl get instance,cluster,svc -n "$NAMESPACE" -o wide
