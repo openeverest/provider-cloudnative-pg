@@ -71,7 +71,9 @@ spec:
               test "$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.test\.openeverest\.io/expose}')" = true
               test "$(kubectl get cluster exposed -n "$NAMESPACE" -o jsonpath='{.spec.managed.services.additional[0].selectorType}')" = rw
               test "$(kubectl get cluster exposed -n "$NAMESPACE" -o jsonpath='{.spec.managed.services.additional[0].serviceTemplate.metadata.name}')" = exposed-rw-lb
-              # k3d servicelb assigns an address; connection Secret should publish it.
+              # k3d servicelb (klipper-lb) assigns an address; connection Secret should publish it.
+              ip=""
+              hostname=""
               for _ in $(seq 1 60); do
                 ip="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
                 hostname="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
@@ -80,19 +82,18 @@ spec:
                 fi
                 sleep 2
               done
+              if [ -z "$ip" ] && [ -z "$hostname" ]; then
+                echo "load balancer has no address yet (is k3s servicelb enabled?)"; exit 1
+              fi
               kubectl wait --for=jsonpath='{.status.phase}'=Ready instance/exposed -n "$NAMESPACE" --timeout=120s
               secret="$(kubectl get instance exposed -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
               host="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host}' | base64 -d)"
               host_lb="$(kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath='{.data.host-lb}' | base64 -d)"
-              ip="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-              hostname="$(kubectl get svc exposed-rw-lb -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
               test "$host_lb" = "exposed-rw-lb.$NAMESPACE.svc"
               if [ -n "$hostname" ]; then
                 test "$host" = "$hostname"
-              elif [ -n "$ip" ]; then
-                test "$host" = "$ip"
               else
-                echo "load balancer has no address yet"; exit 1
+                test "$host" = "$ip"
               fi
       catch:
         - script:
