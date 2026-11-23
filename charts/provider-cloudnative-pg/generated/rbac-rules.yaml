@@ -125,6 +125,13 @@
     - patch
     - update
 - apiGroups:
+    - cert-manager.io
+  resources:
+    - clusterissuers
+    - issuers
+  verbs:
+    - get
+- apiGroups:
     - coordination.k8s.io
   resources:
     - leases

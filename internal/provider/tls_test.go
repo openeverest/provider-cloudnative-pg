@@ -2,11 +2,20 @@ package provider
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
@@ -205,4 +214,90 @@ func TestDeleteUnusedServerCertificate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCertificateWaitNamesTheIssuerProblem(t *testing.T) {
+	notReady := &cmv1.Issuer{
+		ObjectMeta: metav1.ObjectMeta{Name: "databases-ca", Namespace: testNamespace},
+		Status: cmv1.IssuerStatus{Conditions: []cmv1.IssuerCondition{{
+			Type: cmv1.IssuerConditionReady, Status: cmmeta.ConditionFalse, Message: "Error getting keypair for CA issuer",
+		}}},
+	}
+	tests := []struct {
+		name    string
+		issuer  components.IssuerReference
+		objects []client.Object
+		want    string
+	}{
+		{name: "missing ClusterIssuer", issuer: components.IssuerReference{Name: "nope", Kind: "ClusterIssuer"}, want: "the ClusterIssuer nope does not exist"},
+		{name: "missing Issuer", issuer: components.IssuerReference{Name: "nope"}, want: "the Issuer nope does not exist in namespace ns"},
+		{
+			name: "issuer not ready", issuer: components.IssuerReference{Name: "databases-ca"}, objects: []client.Object{notReady},
+			want: "the Issuer databases-ca is not ready: Error getting keypair for CA issuer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := tlsContext(t, tt.objects...)
+			err := syncServerCertificate(c, testCluster(), &components.TLSSpec{Issuer: &tt.issuer})
+			if !controller.IsWaitError(err) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want a wait saying %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateCertificatesSecrets(t *testing.T) {
+	withoutKey := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "client-ca", Namespace: testNamespace},
+		Data:       map[string][]byte{"ca.crt": selfSignedCA(t)},
+	}
+	certificates := &cnpgv1.CertificatesConfiguration{ClientCASecret: "client-ca", ReplicationTLSSecret: "replication"}
+
+	t.Run("client CA without key and no proxy", func(t *testing.T) {
+		c, _ := tlsContext(t, withoutKey)
+		if err := validateCertificatesSecrets(c, &components.CNPGCustomSpec{Certificates: certificates}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("client CA without key and a proxy", func(t *testing.T) {
+		c, _ := tlsContext(t, withoutKey)
+		c.Instance().Spec.Components = map[string]corev1alpha1.ComponentSpec{"proxy": {}}
+		err := validateCertificatesSecrets(c, &components.CNPGCustomSpec{Certificates: certificates})
+		if err == nil || !strings.Contains(err.Error(), "has no ca.key") || !strings.Contains(err.Error(), "client certificate of the proxy component's PgBouncer") {
+			t.Fatalf("error = %v, want one about PgBouncer's client certificate", err)
+		}
+	})
+
+	t.Run("missing Secrets are left to CloudNativePG", func(t *testing.T) {
+		c, _ := tlsContext(t)
+		c.Instance().Spec.Components = map[string]corev1alpha1.ComponentSpec{"proxy": {}}
+		custom := &components.CNPGCustomSpec{Certificates: &cnpgv1.CertificatesConfiguration{
+			ServerTLSSecret: "server", ServerCASecret: "server-ca", ClientCASecret: "client-ca",
+		}}
+		if err := validateCertificatesSecrets(c, custom); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if err := validateTLSSecret(c, &components.TLSSpec{CertificateSecretName: "mine"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func selfSignedCA(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Test CA"}, IsCA: true, BasicConstraintsValid: true,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

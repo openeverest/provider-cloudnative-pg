@@ -62,6 +62,8 @@ package provider
 
 // cert-manager Certificates of tls.issuer, read uncached:
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;create;update;patch;delete
+// The issuer of tls.issuer, read to tell why a Certificate is not issued:
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;clusterissuers,verbs=get
 
 // Pods (the runtime counts labelled component pods into Instance status.components):
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch

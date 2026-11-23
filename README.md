@@ -764,8 +764,8 @@ The Instance "orders" is invalid: spec.components[engine].parameters.postgresql.
   `everestctl instance create|update --dry-run=server`) in CI to get the same errors and warnings
   without changing anything.
 - **Objects the `Instance` relies on** (the extension images in the `ClusterImageCatalog`, the
-  running `Cluster`) never block a write: at admission their problems are warnings, and the
-  `Instance` reports them in its `Ready` condition.
+  running `Cluster`, the [certificate Secrets](#certificate-checks)) never block a write: at
+  admission their problems are warnings, and the `Instance` reports them in its `Ready` condition.
 - **An update is blocked only by new errors:** an `Instance` written under an older provider
   release, or while the provider was down, stays editable.
 - **Provider down:** the webhook is skipped (`failurePolicy: Ignore`) so it can never block
@@ -1011,6 +1011,33 @@ certificates.
 Clients authenticate the server with `sslmode=verify-full` and the CA
 certificate as `sslrootcert`: `ca.crt` of the certificate's Secret
 (`<cluster>-tls` with an issuer).
+
+#### Certificate checks
+
+CloudNativePG gets stuck on certificates it can't use, and some it accepts
+still break replicas or clients. The provider checks the Secrets of `tls` and
+of the `certificates` passthrough once they exist, and the `Instance` reports
+what is wrong in its `Ready` condition instead of applying them:
+
+- the server certificate (`tls.crt`) and its key (`tls.key`) belong together;
+- it chains to `ca.crt` for server authentication, through intermediate CA
+  certificates that follow it in `tls.crt`, and is valid now;
+- `ca.crt` holds the root of that chain: libpq, which replicas and most
+  clients use, does not trust a chain that ends at an intermediate CA;
+- it is valid for a name of the `-rw` Service, such as
+  `<cluster>-rw.<namespace>.svc`;
+- a CA CloudNativePG issues certificates with (`certificates.serverCASecret`
+  without `serverTLSSecret`, `certificates.clientCASecret`) has its private key
+  in `ca.key` in the SEC 1 ECDSA form (`BEGIN EC PRIVATE KEY`), the only one
+  CloudNativePG reads. With the [`proxy` component](#connection-pooling),
+  `clientCASecret` needs it even with `replicationTLSSecret`, since
+  CloudNativePG issues PgBouncer's client certificate with it.
+
+A Secret named like the ones CloudNativePG writes for the instance
+(`<cluster>-ca`, `<cluster>-server`, `<cluster>-replication`) is refused at
+admission: CloudNativePG would overwrite it once the `Instance` stops naming it.
+While cert-manager has not issued the certificate of `tls.issuer`, the
+`Instance` says why, for example that the issuer does not exist or is not ready.
 
 ### Client access rules (pg_hba)
 

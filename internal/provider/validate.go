@@ -48,6 +48,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 		return controller.ValidationResult{Errors: append(errs, field.Invalid(engineParams, field.OmitValueType{}, err.Error()))}
 	}
 	errs = append(errs, invalid(engineParams, cnpg.ValidateCustomSpec(&custom))...)
+	errs = append(errs, invalid(engineParams, cnpg.ValidateCertificateSecretNames(&custom, instance.Name))...)
 	errs = append(errs, invalid(engineParams.Child("postgresql", "synchronous"), cnpg.ValidateSynchronous(engine, &custom))...)
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
@@ -74,8 +75,9 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 // images in the ClusterImageCatalog, and the live Cluster and Database for
 // writes admission didn't see, including a change of the HA replication slot
 // prefix CloudNativePG would refuse, and the bootstrap VolumeSnapshot: authorized
-// for this Instance, and unchanged once the Cluster exists. At admission its errors are warnings; before
-// Sync they block it.
+// for this Instance, and unchanged once the Cluster exists, and the certificate
+// Secrets CloudNativePG would otherwise get stuck on. At admission its errors
+// are warnings; before Sync they block it.
 func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	custom, err := engineCustomSpec(engine)
@@ -100,6 +102,8 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 		{extensionsPath, func() error { return cnpg.ValidateExtensionsAtCreation(c, &custom) }},
 		{slotPrefixPath, func() error { return cnpg.ValidateReplicationSlotsChange(c, &custom) }},
 		{volumeSnapshotPath, func() error { return cnpg.ValidateVolumeSnapshot(c, &custom) }},
+		{engineParams.Child("tls"), func() error { return validateTLSSecret(c, custom.TLS) }},
+		{engineParams.Child("certificates"), func() error { return validateCertificatesSecrets(c, &custom) }},
 	} {
 		err := check.run()
 		if err == nil {

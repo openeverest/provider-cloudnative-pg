@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // caCertificateKey is the Secret key of the CA certificate, in the Secrets
@@ -57,7 +59,7 @@ func syncIssuedCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *compo
 
 	secret := &corev1.Secret{}
 	if err := c.Get(secret, name); apierrors.IsNotFound(err) {
-		return controller.WaitFor(certificateWait(certificate))
+		return controller.WaitFor(certificateWait(certificate, issuerProblem(c, tls.Issuer)))
 	} else if err != nil {
 		return fmt.Errorf("get Secret %q: %w", name, err)
 	}
@@ -129,10 +131,13 @@ func uncachedCertificate(c *controller.Context, name string) (*cmv1.Certificate,
 	return certificate, nil
 }
 
-// certificateWait says what an unissued Certificate waits for, with what
-// cert-manager reports about it.
-func certificateWait(certificate *cmv1.Certificate) string {
+// certificateWait says what an unissued Certificate waits for: what is wrong
+// with its issuer, or else what cert-manager reports about it.
+func certificateWait(certificate *cmv1.Certificate, issuerProblem string) string {
 	wait := fmt.Sprintf("Waiting for cert-manager to issue the Certificate %s", certificate.Name)
+	if issuerProblem != "" {
+		return wait + ": " + issuerProblem
+	}
 	for _, condition := range certificate.Status.Conditions {
 		if condition.Type == cmv1.CertificateConditionReady && condition.Message != "" {
 			return wait + ": " + condition.Message
@@ -213,4 +218,110 @@ func deleteUnusedServerCertificate(c *controller.Context, tls *components.TLSSpe
 		return nil
 	}
 	return client.IgnoreNotFound(c.Delete(certificate))
+}
+
+// validateTLSSecret checks the Secret of the server certificate tls sets,
+// once it exists: Sync waits for a missing one.
+func validateTLSSecret(c *controller.Context, tls *components.TLSSpec) error {
+	name := cnpg.ServerCertificateSecret(tls, c.Name())
+	if name == "" {
+		return nil
+	}
+	secret, err := optionalSecret(c, name)
+	if secret == nil {
+		return err
+	}
+	return cnpg.ValidateServerCertificate(secret, secret, readWriteHosts(c))
+}
+
+// validateCertificatesSecrets checks the Secrets of the certificates
+// passthrough that exist; CloudNativePG reports a missing one.
+func validateCertificatesSecrets(c *controller.Context, custom *components.CNPGCustomSpec) error {
+	certificates := custom.Certificates
+	if certificates == nil {
+		return nil
+	}
+	switch {
+	case certificates.ServerTLSSecret != "" && certificates.ServerCASecret != "":
+		server, err := optionalSecret(c, certificates.ServerTLSSecret)
+		if server == nil {
+			return err
+		}
+		ca, err := optionalSecret(c, certificates.ServerCASecret)
+		if ca == nil {
+			return err
+		}
+		if err := cnpg.ValidateServerCertificate(server, ca, readWriteHosts(c)); err != nil {
+			return fmt.Errorf("serverTLSSecret: %w", err)
+		}
+	case certificates.ServerCASecret != "":
+		if err := validateSigningCA(c, certificates.ServerCASecret, "serverCASecret"); err != nil {
+			return err
+		}
+	}
+
+	// CloudNativePG issues the replication certificate with the client CA,
+	// unless it is given one, and always the client certificate of PgBouncer.
+	_, proxy := c.Instance().Spec.Components[common.ComponentProxy]
+	if certificates.ClientCASecret == "" || (certificates.ReplicationTLSSecret != "" && !proxy) {
+		return nil
+	}
+	err := validateSigningCA(c, certificates.ClientCASecret, "clientCASecret")
+	if err != nil && certificates.ReplicationTLSSecret != "" {
+		return fmt.Errorf("%w; CloudNativePG issues the client certificate of the proxy component's PgBouncer with it, "+
+			"so leave clientCASecret and replicationTLSSecret unset to have it manage the replication certificates", err)
+	}
+	return err
+}
+
+func validateSigningCA(c *controller.Context, name, field string) error {
+	secret, err := optionalSecret(c, name)
+	if secret == nil {
+		return err
+	}
+	return cnpg.ValidateSigningCA(secret, field)
+}
+
+// optionalSecret reads a Secret, nil when it does not exist.
+func optionalSecret(c *controller.Context, name string) (*corev1.Secret, error) {
+	secret := &corev1.Secret{}
+	if err := c.Get(secret, name); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	return secret, nil
+}
+
+// readWriteHosts are the names of the read-write Service clients connect to.
+func readWriteHosts(c *controller.Context) []string {
+	pg := &cnpgv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: c.Name(), Namespace: c.Namespace()}}
+	return slices.DeleteFunc(pg.GetClusterAltDNSNames(), func(name string) bool {
+		return !strings.HasPrefix(name, pg.GetServiceReadWriteName())
+	})
+}
+
+// issuerProblem says why the issuer cannot issue the Certificate, or "" when
+// it is ready or its readiness cannot be told.
+func issuerProblem(c *controller.Context, issuer *components.IssuerReference) string {
+	kind := cnpg.IssuerKind(issuer)
+	if cnpg.IssuerGroup(issuer) != cmv1.SchemeGroupVersion.Group || (kind != cmv1.IssuerKind && kind != cmv1.ClusterIssuerKind) {
+		return ""
+	}
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(cmv1.SchemeGroupVersion.WithKind(kind))
+	if err := c.Get(obj, issuer.Name); apierrors.IsNotFound(err) {
+		if kind == cmv1.IssuerKind {
+			return fmt.Sprintf("the Issuer %s does not exist in namespace %s", issuer.Name, c.Namespace())
+		}
+		return fmt.Sprintf("the ClusterIssuer %s does not exist", issuer.Name)
+	} else if err != nil {
+		return ""
+	}
+	conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, condition := range conditions {
+		condition, _ := condition.(map[string]any)
+		if condition["type"] == string(cmv1.IssuerConditionReady) && condition["status"] == string(cmmeta.ConditionFalse) {
+			return fmt.Sprintf("the %s %s is not ready: %v", kind, issuer.Name, condition["message"])
+		}
+	}
+	return ""
 }
