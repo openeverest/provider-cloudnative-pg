@@ -126,7 +126,7 @@ ui:
           path: spec.components.engine.parameters.extensions.timescaledbCommunity.enabled
           fieldParams:
             label: "TimescaleDB Community (Timescale License)"
-            helperText: "TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. PostgreSQL 18.6+ only; preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0)."
+            helperText: "TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. Needs PostgreSQL 18.6 or later, such as 18.6 or 18.7 (each has its own build, matched to the database version); preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0)."
             defaultValue: false
             modes:
               edit:
@@ -137,7 +137,7 @@ ui:
             celExpressions:
               # Parenthesized so the UI path linter does not read .matches as a field.
               - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) || (spec.version).matches("^18\\.([6-9]|[1-9][0-9]+)(\\.|$)")'
-                message: "TimescaleDB Community requires PostgreSQL 18.6 or later. Select a newer 18.x database version to enable it."
+                message: "TimescaleDB Community requires PostgreSQL 18.6 or later. Select 18.6, 18.7 or a newer 18.x database version to enable it."
               - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled && has(spec.components.engine.parameters.extensions.timescaledb.enabled) && spec.components.engine.parameters.extensions.timescaledb.enabled)'
                 message: "Enable either TimescaleDB (Apache-2.0) or TimescaleDB Community, not both."
         pgvector:
