@@ -61,6 +61,14 @@ spec:
               echo "$issuer"
               case "$issuer" in *"Test Databases CA"*) ;; *) exit 1 ;; esac
               kubectl get certificate tls-certs-tls -n "$NAMESPACE" -o jsonpath='{.spec.dnsNames}' | grep -q tls-certs.example.com
+              # The connection details carry the CA clients verify the server with.
+              want="$(kubectl get secret tls-certs-tls -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')"
+              for _ in $(seq 1 20); do
+                conn="$(kubectl get instance tls-certs -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+                [ -n "$conn" ] && [ "$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')" = "$want" ] && break
+                sleep 3
+              done
+              test "$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')" = "$want"
 
     - name: switch-to-own-secret
       try:
@@ -154,6 +162,13 @@ spec:
               case "$issuer" in *"Test Databases CA"*) ;; *) exit 1 ;; esac
               kubectl wait --for=condition=Ready instance/tls-certs -n "$NAMESPACE" --timeout=180s
               test "$(kubectl get pod tls-certs-1 -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')" = "$uid"
+              conn="$(kubectl get instance tls-certs -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              want="$(kubectl get secret own-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')"
+              for _ in $(seq 1 20); do
+                [ "$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')" = "$want" ] && break
+                sleep 3
+              done
+              test "$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')" = "$want"
       catch:
         - script:
             content: kubectl get cluster tls-certs -n "$NAMESPACE" -o jsonpath='{.status.phase}{" | "}{.status.phaseReason}{"\n"}{.status.certificates}'

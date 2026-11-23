@@ -706,7 +706,7 @@ ui:
           uiType: group
           groupType: bordered
           label: "Server certificate"
-          description: "Leave empty to have CloudNativePG issue the certificate from a CA it creates for the instance. Changing it is applied without a restart."
+          description: "Leave empty to have CloudNativePG issue the certificate from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Changing it is applied without a restart."
           components:
             issuer:
               uiType: group
