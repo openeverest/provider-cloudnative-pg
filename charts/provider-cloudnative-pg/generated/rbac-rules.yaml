@@ -115,6 +115,16 @@
     - list
     - watch
 - apiGroups:
+    - cert-manager.io
+  resources:
+    - certificates
+  verbs:
+    - create
+    - delete
+    - get
+    - patch
+    - update
+- apiGroups:
     - coordination.k8s.io
   resources:
     - leases

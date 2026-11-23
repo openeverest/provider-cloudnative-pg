@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,6 +59,7 @@ func New() *Provider {
 				addBarmanCloudScheme,
 				batchv1.AddToScheme,
 				appsv1.AddToScheme,
+				cmv1.AddToScheme,
 			},
 		},
 	}
@@ -136,6 +138,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if custom.Certificates != nil {
 		pg.Spec.Certificates = custom.Certificates
 	}
+	cnpg.ApplyTLS(pg, custom.TLS, c.Name())
 
 	if custom.Monitoring != nil {
 		pg.Spec.Monitoring = custom.Monitoring
@@ -181,7 +184,15 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
+	if err := syncServerCertificate(c, pg, custom.TLS); err != nil {
+		return err
+	}
+
 	if err := c.Apply(pg); err != nil {
+		return err
+	}
+
+	if err := deleteUnusedServerCertificate(c, custom.TLS); err != nil {
 		return err
 	}
 

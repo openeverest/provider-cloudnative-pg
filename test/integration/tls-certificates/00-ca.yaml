@@ -1,0 +1,31 @@
+# A CA issuer in the test namespace: a self-signed issuer signs the CA
+# certificate, and the CA issuer signs with it and writes ca.crt.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: test-ca
+spec:
+  isCA: true
+  commonName: Test Databases CA
+  secretName: test-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: bootstrap
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: databases-ca
+spec:
+  ca:
+    secretName: test-ca

@@ -40,6 +40,9 @@ func ValidateCustomSpec(custom *components.CNPGCustomSpec) error {
 			return err
 		}
 	}
+	if err := ValidateTLS(custom.TLS, custom.Certificates); err != nil {
+		return err
+	}
 	if strings.TrimSpace(custom.PgHBA) != "" {
 		if custom.PostgresConfiguration != nil && len(custom.PostgresConfiguration.PgHBA) > 0 {
 			return fmt.Errorf("pgHBA cannot be combined with postgresql.pg_hba; move the rules to pgHBA")

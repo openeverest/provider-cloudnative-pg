@@ -3024,6 +3024,60 @@ spec:
                 when the engine's storage size increases; the StorageClass must allow
                 volume expansion. Unset keeps CNPG's default, true.
               type: boolean
+            tls:
+              description: |-
+                TLS sets the server certificate PostgreSQL and PgBouncer present to
+                clients: one a cert-manager issuer signs, or one in a Secret. Without
+                it CNPG issues the certificate from a CA it creates for the instance.
+                Its issuer and certificateSecretName cannot be combined with the server
+                fields of certificates.
+              properties:
+                certificateSecretName:
+                  description: |-
+                    CertificateSecretName is a Secret in the instance's namespace holding
+                    the server certificate, followed by any intermediate CA certificates
+                    (tls.crt), its private key (tls.key) and the CA certificate clients
+                    verify the server with (ca.crt). The certificate must be valid for the
+                    names clients connect to, such as <instance>-rw.<namespace>.svc. The
+                    provider labels the Secret cnpg.io/reload, so PostgreSQL loads a
+                    renewed certificate without a restart.
+                  type: string
+                extraDNSNames:
+                  description: |-
+                    ExtraDNSNames are names the server certificate is valid for besides
+                    those of the instance's Services, such as an external DNS name. Used
+                    with issuer, or without issuer and certificateSecretName for the
+                    certificate CNPG issues. Cannot be combined with certificateSecretName,
+                    whose certificate carries its own names.
+                  items:
+                    type: string
+                  type: array
+                issuer:
+                  description: |-
+                    Issuer is the cert-manager Issuer or ClusterIssuer that signs the
+                    server certificate. The provider requests it as the Certificate
+                    <instance>-tls, for every name of the instance's Services and those of
+                    extraDNSNames, and cert-manager renews it. The issuer must write its CA
+                    certificate to the Secret's ca.crt, as the CA and Vault issuers do;
+                    clients verify the server with it. Needs cert-manager.
+                  properties:
+                    group:
+                      description: |-
+                        Group is the API group of an external issuer, such as
+                        awspca.cert-manager.io. Defaults to cert-manager.io.
+                      type: string
+                    kind:
+                      description: |-
+                        Kind of the issuer: Issuer (the default) or ClusterIssuer, or the kind
+                        of an external issuer of group.
+                      type: string
+                    name:
+                      description: Name of the issuer. An Issuer must be in the instance's namespace.
+                      type: string
+                  required:
+                    - name
+                  type: object
+              type: object
             walStorage:
               description: |-
                 WALStorage provisions a separate WAL PVC per PostgreSQL instance using
@@ -3344,16 +3398,6 @@ spec:
                 regex:
                   message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
                   pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-            requireTLS:
-              fieldParams:
-                defaultValue: true
-                helperText: Rejects unencrypted connections. Clients must connect with TLS; libpq's default sslmode=prefer does, sslmode=disable is refused. Applied without a restart.
-                label: Require TLS for client connections
-                modes:
-                  edit:
-                    defaultValue: false
-              path: spec.components.engine.parameters.requireTLS
-              uiType: toggle
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -3371,7 +3415,6 @@ spec:
           componentsOrder:
             - storageClass
             - priorityClassName
-            - requireTLS
             - pgHBA
             - configuration
           description: Configure advanced settings for your database
@@ -4026,12 +4069,79 @@ spec:
             - logicalSlotFailover
           description: Configure the resources your new database will have access to.
           label: Resources details
+        tls:
+          components:
+            certificates:
+              components:
+                certificateSecretName:
+                  fieldParams:
+                    helperText: Secret with the certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). The certificate must be valid for the names clients connect to, such as <name>-rw.<namespace>.svc.
+                    label: Certificate secret
+                  path: spec.components.engine.parameters.tls.certificateSecretName
+                  uiType: text
+                  validation:
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                issuer:
+                  components:
+                    issuerKind:
+                      fieldParams:
+                        helperText: Issuer when not set
+                        label: Issuer kind
+                        options:
+                          - label: Issuer
+                            value: Issuer
+                          - label: ClusterIssuer
+                            value: ClusterIssuer
+                      path: spec.components.engine.parameters.tls.issuer.kind
+                      uiType: select
+                    issuerName:
+                      fieldParams:
+                        helperText: Issuer that signs the certificate for the instance's Services. It must write its CA certificate (ca.crt), as CA and Vault issuers do. Needs cert-manager.
+                        label: cert-manager issuer
+                      path: spec.components.engine.parameters.tls.issuer.name
+                      uiType: text
+                      validation:
+                        celExpressions:
+                          - celExpr: '!has(spec.components.engine.parameters.tls.issuer.name) || spec.components.engine.parameters.tls.issuer.name == '''' || !has(spec.components.engine.parameters.tls.certificateSecretName) || spec.components.engine.parameters.tls.certificateSecretName == '''''
+                            message: Use either an issuer or a certificate secret, not both
+                          - celExpr: '!has(spec.components.engine.parameters.tls.issuer.kind) || spec.components.engine.parameters.tls.issuer.kind == '''' || (has(spec.components.engine.parameters.tls.issuer.name) && spec.components.engine.parameters.tls.issuer.name != '''')'
+                            message: Name the issuer
+                  componentsOrder:
+                    - issuerName
+                    - issuerKind
+                  groupType: line
+                  uiType: group
+              componentsOrder:
+                - issuer
+                - certificateSecretName
+              description: Leave empty to have CloudNativePG issue the certificate from a CA it creates for the instance. Changing it is applied without a restart.
+              groupType: bordered
+              label: Server certificate
+              uiType: group
+            requireTLS:
+              fieldParams:
+                defaultValue: true
+                helperText: Rejects unencrypted connections. Clients must connect with TLS; libpq's default sslmode=prefer does, sslmode=disable is refused. Applied without a restart.
+                label: Require TLS for client connections
+                modes:
+                  edit:
+                    defaultValue: false
+              path: spec.components.engine.parameters.requireTLS
+              uiType: toggle
+          componentsOrder:
+            - requireTLS
+            - certificates
+          description: Encrypt client connections and choose the certificate the instance presents to clients.
+          label: TLS
       sectionsOrder:
         - databaseVersion
         - bootstrap
         - extensions
         - resources
         - pooler
+        - tls
         - advanced
   versions:
     - components:
