@@ -153,6 +153,24 @@ toggle is your acceptance of the TSL; the provider itself remains Apache-2.0. Ti
 these binaries against the latest PostgreSQL minor, so they need PostgreSQL 18.6 or later. The
 editions use different binaries, so an instance cannot switch between them.
 
+A new TimescaleDB Community release in the catalog updates the extension in place, but
+CloudNativePG cannot run that update yet
+([cloudnative-pg/cloudnative-pg#11987](https://github.com/cloudnative-pg/cloudnative-pg/issues/11987)):
+TimescaleDB only accepts `ALTER EXTENSION timescaledb UPDATE` as the first statement of a
+session. The instance keeps running the installed release, and its status reports `extension
+"timescaledb" cannot be updated after the old version has already been loaded` until you
+update it once on the primary, in the application database (`app` unless set in `bootstrap`):
+
+```sh
+primary="$(kubectl get cluster -n <namespace> <instance> -o jsonpath='{.status.currentPrimary}')"
+kubectl exec -n <namespace> "$primary" -c postgres -- \
+  psql -X -d app -c "ALTER EXTENSION timescaledb UPDATE"
+```
+
+Update instances created with 2.31.0 (provider 0.4.1 and earlier) this way: 2.31.0 background
+jobs, including compression, retention and continuous aggregate policies, fail on PostgreSQL
+18.7 and later.
+
 #### pg_cron
 
 The provider sets `cron.database_name` to the application database, where it creates the
