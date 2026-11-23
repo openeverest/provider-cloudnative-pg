@@ -29,3 +29,5 @@ spec:
             enabled: true
           pgcron:
             enabled: true
+          timescaledbCommunity:
+            enabled: true
