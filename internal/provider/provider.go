@@ -196,6 +196,10 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
+	if err := reissueStaleCertificates(c, pg); err != nil {
+		return err
+	}
+
 	if err := cnpg.DeleteQueryStatisticsConfigMap(c, &custom); err != nil {
 		return err
 	}

@@ -223,3 +223,22 @@ func chainsToRootIn(cert *x509.Certificate, bundle []*x509.Certificate) bool {
 	_, err := cert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err == nil
 }
+
+// SignedBy says whether the certificate in tls.crt of leaf is signed by a
+// certificate in ca.crt of ca. It is true when either cannot be read, so the
+// caller leaves a certificate it cannot judge alone.
+func SignedBy(leaf, ca *corev1.Secret) bool {
+	block, _ := pem.Decode(leaf.Data[tlsCertificateKey])
+	if block == nil {
+		return true
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return true
+	}
+	cas, err := parseCertificates(ca.Data[caCertificateKey])
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(cas, func(ca *x509.Certificate) bool { return cert.CheckSignatureFrom(ca) == nil })
+}

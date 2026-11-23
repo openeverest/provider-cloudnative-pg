@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
@@ -324,4 +325,52 @@ func issuerProblem(c *controller.Context, issuer *components.IssuerReference) st
 		}
 	}
 	return ""
+}
+
+// reissueStaleCertificates deletes the server and replication certificates
+// CloudNativePG issued when they are no longer signed by the CA it now issues
+// them with, so it issues them again. CloudNativePG renews its certificates
+// only when they expire: after a change of certificates.serverCASecret or
+// clientCASecret it would keep presenting the old server certificate, which
+// clients and replicas no longer trust, and replicas would keep presenting a
+// replication certificate the primary no longer accepts. It waits until
+// CloudNativePG has seen the new CA, so it does not issue from the old one.
+func reissueStaleCertificates(c *controller.Context, desired *cnpgv1.Cluster) error {
+	pg := &cnpgv1.Cluster{}
+	if err := c.Get(pg, c.Name()); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	certificates := desired.Spec.Certificates
+	if certificates == nil {
+		certificates = &cnpgv1.CertificatesConfiguration{}
+	}
+	observed := pg.Status.Certificates
+	for _, issued := range []struct {
+		supplied, secret, ca, observedCA string
+	}{
+		{certificates.ServerTLSSecret, desired.GetServerTLSSecretName(), desired.GetServerCASecretName(), observed.ServerCASecret},
+		{certificates.ReplicationTLSSecret, desired.GetReplicationSecretName(), desired.GetClientCASecretName(), observed.ClientCASecret},
+	} {
+		if issued.supplied != "" || issued.observedCA != issued.ca {
+			continue
+		}
+		if err := deleteIfNotSignedBy(c, pg, issued.secret, issued.ca); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteIfNotSignedBy(c *controller.Context, pg *cnpgv1.Cluster, secretName, caName string) error {
+	secret, err := optionalSecret(c, secretName)
+	if secret == nil || !metav1.IsControlledBy(secret, pg) {
+		return err
+	}
+	ca, err := optionalSecret(c, caName)
+	if ca == nil || cnpg.SignedBy(secret, ca) {
+		return err
+	}
+	log.FromContext(c.Context()).Info("Deleting a certificate CloudNativePG issued with another CA, to have it issued again",
+		"secret", secretName, "ca", caName)
+	return client.IgnoreNotFound(c.Delete(secret))
 }

@@ -60,6 +60,9 @@ package provider
 // Secrets (CNPG credentials in Status(), connection secret in provider-runtime):
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
+// CloudNativePG's certificates issued with a CA the Cluster no longer uses, deleted to have them issued again:
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
+
 // cert-manager Certificates of tls.issuer, read uncached:
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;create;update;patch;delete
 // The issuer of tls.issuer, read to tell why a Certificate is not issued:

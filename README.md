@@ -1008,6 +1008,12 @@ CloudNativePG's certificate, without a restart. `tls.issuer` and
 remains for what `tls` doesn't cover, such as the replication client
 certificates.
 
+CloudNativePG renews the certificates it issues only when they expire. When
+the CA it issues them with changes, `certificates.serverCASecret` or
+`clientCASecret` set, changed or removed on a running instance, the provider
+deletes the server and replication certificates the old CA signed once
+CloudNativePG uses the new one, so it issues them again, without a restart.
+
 Clients authenticate the server with `sslmode=verify-full` and the CA
 certificate as `sslrootcert`: `ca.crt` of the certificate's Secret
 (`<cluster>-tls` with an issuer).

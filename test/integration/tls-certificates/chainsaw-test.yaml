@@ -3,6 +3,7 @@
 # poolers included, and clients verify it with the issuer's CA. Switching to
 # tls.certificateSecretName and back to CloudNativePG's certificate reloads
 # PostgreSQL without restarting it, and deletes the provider's Certificate.
+# Moving to a CA CloudNativePG issues with has it issue the certificate again.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -125,3 +126,34 @@ spec:
               echo "$issuer"
               case "$issuer" in *"CN=tls-certs"*) ;; *) exit 1 ;; esac
               kubectl wait --for=condition=Ready cluster/tls-certs -n "$NAMESPACE" --timeout=180s
+
+    - name: switch-to-a-ca-cloudnative-pg-issues-with
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              # The test CA's key, which cert-manager writes in the SEC 1 form CloudNativePG reads.
+              kubectl get secret test-ca -n "$NAMESPACE" -o go-template='{{index .data "tls.crt" | base64decode}}' > /tmp/"$NAMESPACE"-ca.crt
+              kubectl get secret test-ca -n "$NAMESPACE" -o go-template='{{index .data "tls.key" | base64decode}}' > /tmp/"$NAMESPACE"-ca.key
+              kubectl create secret generic own-ca -n "$NAMESPACE" \
+                --from-file=ca.crt=/tmp/"$NAMESPACE"-ca.crt --from-file=ca.key=/tmp/"$NAMESPACE"-ca.key
+              rm -f /tmp/"$NAMESPACE"-ca.crt /tmp/"$NAMESPACE"-ca.key
+              uid="$(kubectl get pod tls-certs-1 -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+              kubectl patch instance/tls-certs -n "$NAMESPACE" --type=merge \
+                -p '{"spec":{"components":{"engine":{"parameters":{"certificates":{"serverCASecret":"own-ca"}}}}}}'
+              # CloudNativePG keeps a certificate until it expires; the provider
+              # has it issued again from the new CA.
+              for _ in $(seq 1 80); do
+                issuer="$(kubectl exec -n "$NAMESPACE" tls-certs-1 -c postgres -- sh -c \
+                  'openssl s_client -starttls postgres -connect tls-certs-rw:5432 </dev/null 2>/dev/null | openssl x509 -noout -issuer' || true)"
+                case "$issuer" in *"Test Databases CA"*) break ;; esac
+                sleep 3
+              done
+              echo "$issuer"
+              case "$issuer" in *"Test Databases CA"*) ;; *) exit 1 ;; esac
+              kubectl wait --for=condition=Ready instance/tls-certs -n "$NAMESPACE" --timeout=180s
+              test "$(kubectl get pod tls-certs-1 -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')" = "$uid"
+      catch:
+        - script:
+            content: kubectl get cluster tls-certs -n "$NAMESPACE" -o jsonpath='{.status.phase}{" | "}{.status.phaseReason}{"\n"}{.status.certificates}'

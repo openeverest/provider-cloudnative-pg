@@ -301,3 +301,139 @@ func selfSignedCA(t *testing.T) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+// testCA is a CA that signs leaf certificates for the tests.
+type testCA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	pem  []byte
+}
+
+func newTestCA(t *testing.T, name string) testCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, IsCA: true, BasicConstraintsValid: true,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testCA{cert: cert, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
+}
+
+func (ca testCA) sign(t *testing.T, name string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, DNSNames: []string{name},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestReissueStaleCertificates(t *testing.T) {
+	oldCA, newCA := newTestCA(t, "pg"), newTestCA(t, "Acme Root CA")
+	caSecret := func(name string, ca testCA) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}, Data: map[string][]byte{"ca.crt": ca.pem}}
+	}
+	cluster := func(spec *cnpgv1.CertificatesConfiguration, observedServerCA, observedClientCA string) *cnpgv1.Cluster {
+		pg := testCluster()
+		pg.UID = "cluster-uid"
+		pg.Spec.Certificates = spec
+		pg.Status.Certificates.ServerCASecret = observedServerCA
+		pg.Status.Certificates.ClientCASecret = observedClientCA
+		return pg
+	}
+	issued := func(pg *cnpgv1.Cluster, name string, by testCA) *corev1.Secret {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+			Data:       map[string][]byte{"tls.crt": by.sign(t, "pg-rw")},
+		}
+		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(pg, cnpgv1.SchemeGroupVersion.WithKind(cnpgv1.ClusterKind))}
+		return secret
+	}
+	ownCA := &cnpgv1.CertificatesConfiguration{ServerCASecret: "acme-ca", ClientCASecret: "acme-ca"}
+
+	tests := []struct {
+		name        string
+		pg          *cnpgv1.Cluster
+		secrets     func(pg *cnpgv1.Cluster) []client.Object
+		wantDeleted []string
+		wantKept    []string
+	}{
+		{
+			name: "switched to a CA it issues with", pg: cluster(ownCA, "acme-ca", "acme-ca"),
+			secrets: func(pg *cnpgv1.Cluster) []client.Object {
+				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
+			},
+			wantDeleted: []string{"pg-server", "pg-replication"},
+		},
+		{
+			name: "switched back to its own CA", pg: cluster(nil, "pg-ca", "pg-ca"),
+			secrets: func(pg *cnpgv1.Cluster) []client.Object {
+				return []client.Object{caSecret("pg-ca", oldCA), issued(pg, "pg-server", newCA), issued(pg, "pg-replication", oldCA)}
+			},
+			wantDeleted: []string{"pg-server"}, wantKept: []string{"pg-replication"},
+		},
+		{
+			name: "CloudNativePG has not seen the new CA", pg: cluster(ownCA, "pg-ca", "pg-ca"),
+			secrets: func(pg *cnpgv1.Cluster) []client.Object {
+				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
+			},
+			wantKept: []string{"pg-server", "pg-replication"},
+		},
+		{
+			name: "supplied certificates", pg: cluster(&cnpgv1.CertificatesConfiguration{
+				ServerTLSSecret: "mine", ServerCASecret: "acme-ca", ClientCASecret: "acme-ca", ReplicationTLSSecret: "repl",
+			}, "acme-ca", "acme-ca"),
+			secrets: func(pg *cnpgv1.Cluster) []client.Object {
+				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
+			},
+			wantKept: []string{"pg-server", "pg-replication"},
+		},
+		{
+			name: "not CloudNativePG's", pg: cluster(ownCA, "acme-ca", "acme-ca"),
+			secrets: func(pg *cnpgv1.Cluster) []client.Object {
+				server := issued(pg, "pg-server", oldCA)
+				server.OwnerReferences = nil
+				return []client.Object{caSecret("acme-ca", newCA), server}
+			},
+			wantKept: []string{"pg-server"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, cl := tlsContext(t, append([]client.Object{tt.pg}, tt.secrets(tt.pg)...)...)
+			if err := reissueStaleCertificates(c, tt.pg); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tt.wantDeleted {
+				err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &corev1.Secret{})
+				if !apierrors.IsNotFound(err) {
+					t.Errorf("%s was not deleted (err %v)", name, err)
+				}
+			}
+			for _, name := range tt.wantKept {
+				if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &corev1.Secret{}); err != nil {
+					t.Errorf("%s was deleted: %v", name, err)
+				}
+			}
+		})
+	}
+}
