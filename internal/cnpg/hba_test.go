@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AlekSi/pointer"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
@@ -111,10 +111,11 @@ func TestParsePgHBAErrors(t *testing.T) {
 
 func TestApplyPgHBA(t *testing.T) {
 	tests := []struct {
-		name       string
-		custom     components.CNPGCustomSpec
+		name        string
+		custom      components.CNPGCustomSpec
+		requireTLS  bool
 		passthrough []string
-		want       []string
+		want        []string
 	}{
 		{name: "unset keeps postgresql.pg_hba", passthrough: []string{"host all all all reject"}, want: []string{"host all all all reject"}},
 		{
@@ -123,9 +124,10 @@ func TestApplyPgHBA(t *testing.T) {
 			want:   []string{"hostssl app app 10.0.0.0/8 scram-sha-256", "host app all all reject"},
 		},
 		{
-			name:   "requireTLS goes first",
-			custom: components.CNPGCustomSpec{PgHBA: "host app app 10.0.0.0/8 scram-sha-256", RequireTLS: pointer.To(true)},
-			want:   []string{RejectNonTLSRule, "host app app 10.0.0.0/8 scram-sha-256"},
+			name:       "requireTLS goes first",
+			custom:     components.CNPGCustomSpec{PgHBA: "host app app 10.0.0.0/8 scram-sha-256"},
+			requireTLS: true,
+			want:       []string{RejectNonTLSRule, "host app app 10.0.0.0/8 scram-sha-256"},
 		},
 	}
 	for _, tt := range tests {
@@ -135,7 +137,11 @@ func TestApplyPgHBA(t *testing.T) {
 			if err := ApplyPgHBA(pg, &tt.custom); err != nil {
 				t.Fatalf("ApplyPgHBA() error = %v", err)
 			}
-			ApplyRequireTLS(pg, &tt.custom)
+			tls := definition.TLSParameters{Mode: definition.TLSModePrefer}
+			if tt.requireTLS {
+				tls.Mode = definition.TLSModeRequire
+			}
+			ApplyTLS(pg, tls, "pg")
 			if !slices.Equal(pg.Spec.PostgresConfiguration.PgHBA, tt.want) {
 				t.Fatalf("pg_hba = %q, want %q", pg.Spec.PostgresConfiguration.PgHBA, tt.want)
 			}

@@ -20,11 +20,6 @@ type CNPGCustomSpec struct {
 	// PriorityClassName sets the Kubernetes PriorityClass of the instance pods.
 	// The PriorityClass must exist; changing it rolls the instance pods.
 	PriorityClassName string `json:"priorityClassName,omitempty"`
-	// RequireTLS rejects client connections that do not use TLS by placing a
-	// "hostnossl all all all reject" rule before the user's pg_hba rules.
-	// Unset or false keeps CNPG's default, which also accepts unencrypted
-	// connections. Applied by CNPG with a configuration reload, no restart.
-	RequireTLS *bool `json:"requireTLS,omitempty"`
 
 	// PgHBA declares which clients may connect to which databases as which
 	// users: pg_hba.conf records, one per line, such as
@@ -66,10 +61,10 @@ type CNPGCustomSpec struct {
 	// (postgresql.conf), pg_hba and pg_ident records, synchronous
 	// replication, shared_preload_libraries, LDAP and more. CNPG manages a
 	// fixed set of parameters itself and rejects them here. The provider adds
-	// the records of requireTLS and pgHBA, the parameters and libraries of
-	// enabled extensions and replication slot settings. pg_hba cannot be
-	// combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
-	// for parameters that need it.
+	// the records of spec.parameters.tls.mode and pgHBA, the parameters and
+	// libraries of enabled extensions and replication slot settings. pg_hba
+	// cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
+	// instances for parameters that need it.
 	PostgresConfiguration *cnpgv1.PostgresConfiguration `json:"postgresql,omitempty"`
 
 	// Managed is CNPG's declarative management of PostgreSQL roles
@@ -82,12 +77,6 @@ type CNPGCustomSpec struct {
 	// creation, and ignored when the Instance restores a backup
 	// (spec.dataSource).
 	Bootstrap *BootstrapConfiguration `json:"bootstrap,omitempty"`
-
-	// Certificates are the TLS certificates of the instance (CNPG
-	// certificates). Without them CNPG issues and rotates its own.
-	// serverTLSSecret needs serverCASecret and cannot be combined with
-	// serverAltDNSNames; replicationTLSSecret needs clientCASecret.
-	Certificates *cnpgv1.CertificatesConfiguration `json:"certificates,omitempty"`
 
 	// Monitoring configures CNPG's metrics exporter on port 9187 of every
 	// instance pod: custom queries, the default queries, TLS and relabeling.

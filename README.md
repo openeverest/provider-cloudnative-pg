@@ -68,7 +68,8 @@ provider itself is covered under [Installation](#installation).
 | Managed roles | ✅ | CloudNativePG managed roles with readiness gating in `Status()` |
 | Synchronous replication | ✅ | `parameters.postgresql.synchronous`; see [Synchronous replication](#synchronous-replication) |
 | Logical replication slot failover | ✅ | `parameters.replicationSlots.highAvailability.synchronizeLogicalDecoding` (PostgreSQL 17+); see [Logical replication slot failover](#logical-replication-slot-failover) |
-| TLS-only connections | ✅ | `parameters.requireTLS: true` rejects unencrypted client connections; see [Require TLS](#require-tls) |
+| TLS-only connections | ✅ | `spec.parameters.tls.mode: requireTLS` rejects unencrypted client connections; see [Require TLS](#require-tls) |
+| Bring your own CA | ✅ | `spec.parameters.tls`: the server certificate from a cert-manager issuer or a Secret, the replication certificate from a Secret; see [Bring your own CA](#bring-your-own-ca) |
 | Client access rules (pg_hba) | ✅ | `parameters.pgHBA` declares which clients may connect to which databases as which users; see [Client access rules](#client-access-rules-pg_hba) |
 | Connection pooling | ✅ | optional `proxy` component → CloudNativePG `Pooler` (PgBouncer, type `rw`); `parameters.readOnly` also creates a type `ro` Pooler; see [Connection pooling](#connection-pooling) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy` (all fields), or `parameters.affinity` — not both |
@@ -482,8 +483,9 @@ More examples live in [examples/](examples/), including
 [on-demand backup](examples/backup-ondemand.yaml),
 [restore](examples/instance-restore.yaml),
 [PITR](examples/instance-pitr.yaml),
-[pooler](examples/instance-pooler.yaml), and
-[service exposure](examples/instance-services.yaml).
+[pooler](examples/instance-pooler.yaml),
+[service exposure](examples/instance-services.yaml), and
+[bring your own CA](examples/instance-tls.yaml).
 
 ### Connection details
 
@@ -497,7 +499,7 @@ kubectl get instance my-instance -o jsonpath='{.status.connectionSecretRef.name}
 ```
 
 The credentials (`host`, `port`, `username`, `password`, `uri`, `sslmode`,
-`host-r`, `host-ro`) live in the connection Secret named by
+`host-r`, `host-ro`, `ca.crt`) live in the connection Secret named by
 `.status.connectionSecretRef.name`.
 
 - `host` is `<cluster>-rw.<namespace>.svc`, the read-write Service. With the
@@ -516,15 +518,23 @@ The credentials (`host`, `port`, `username`, `password`, `uri`, `sslmode`,
   port is `5432`. The PostgreSQL Service port is not configurable. With the
   pooler enabled, `port` is 5432 because PgBouncer's `listen_port` is fixed.
 - `sslmode` is `require`, and `uri` includes it. CloudNativePG always serves
-  TLS, so this works whether or not [`requireTLS`](#require-tls) is set.
+  TLS, so this works whatever [`tls.mode`](#require-tls) is.
   libpq's default `prefer` is not published.
+- `ca.crt` is the CA certificate clients verify the server certificate with:
+  CloudNativePG's own CA, or the CA of the
+  [server certificate](#bring-your-own-ca) the instance sets. Save it to a
+  file and connect with `sslmode=verify-full sslrootcert=<file>` to
+  authenticate the server:
+
+  ```bash
+  kubectl get secret <connection-secret> -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+  psql "host=<cluster>-rw.<namespace>.svc user=app dbname=app sslmode=verify-full sslrootcert=ca.crt"
+  ```
 
 `node-postgres` (`pg-connection-string` 2.7 and later) treats `sslmode=prefer`,
 `require`, and `verify-ca` as `verify-full` (`ssl: true`). That check fails
-for CloudNativePG's operator-managed server certificate. The CA certificate
-is the `ca.crt` key in the `<cluster>-ca` Secret, or in the Secret named by
-`certificates.serverCASecret` when you bring your own. Use that file as
-`sslrootcert` with `sslmode=verify-full` to authenticate the server.
+unless the client is given the CA certificate. Use `ca.crt` of the connection
+details as `sslrootcert` with `sslmode=verify-full` to authenticate the server.
 `pg-connection-string` also accepts `sslmode=no-verify`, which encrypts
 without checking the certificate. That value is not a libpq `sslmode`.
 
@@ -724,9 +734,10 @@ spec:
         readOnly: true
 ```
 
-PgBouncer presents the cluster's server certificate. `sslmode=require` works;
-`verify-full` checks a name that certificate is not issued for. See
-[Connection details](#connection-details). With [`requireTLS`](#require-tls)
+PgBouncer presents the cluster's server certificate. `sslmode=require` works.
+`verify-full` needs a certificate issued for the pooler Services: one from
+[`tls.issuer`](#with-a-cert-manager-issuer) is, CloudNativePG's own is not. See
+[Connection details](#connection-details). With [`tls.mode: requireTLS`](#require-tls)
 each Pooler also refuses unencrypted clients (`client_tls_sslmode=require`).
 
 ## Versions
@@ -782,8 +793,8 @@ The Instance "orders" is invalid: spec.components[engine].parameters.postgresql.
   `everestctl instance create|update --dry-run=server`) in CI to get the same errors and warnings
   without changing anything.
 - **Objects the `Instance` relies on** (the extension images in the `ClusterImageCatalog`, the
-  running `Cluster`) never block a write: at admission their problems are warnings, and the
-  `Instance` reports them in its `Ready` condition.
+  running `Cluster`, the [certificate Secrets](#certificate-checks)) never block a write: at
+  admission their problems are warnings, and the `Instance` reports them in its `Ready` condition.
 - **An update is blocked only by new errors:** an `Instance` written under an older provider
   release, or while the provider was down, stays editable.
 - **Provider down:** the webhook is skipped (`failurePolicy: Ignore`) so it can never block
@@ -801,8 +812,7 @@ The technology-specific knobs worth knowing about:
 | `managed` | `engine` | Managed PostgreSQL roles |
 | `resizeInUseVolumes` | `engine` | Allow PVC expansion on running instances |
 | `priorityClassName` | `engine` | Kubernetes PriorityClass of the instance pods |
-| `certificates` | `engine` | TLS certificate configuration passthrough |
-| `requireTLS` | `engine` | Reject unencrypted client connections; see [Require TLS](#require-tls) |
+| `tls` | instance (`spec.parameters`) | TLS mode, certificates and issuer; see [Require TLS](#require-tls) and [Bring your own CA](#bring-your-own-ca) |
 | `replicationSlots` | `engine` | CloudNativePG `ReplicationSlotsConfiguration` (HA slots, user slot synchronization, logical slot failover); see [Logical replication slot failover](#logical-replication-slot-failover) |
 | `pgHBA` | `engine` | `pg_hba.conf` records, one per line; see [Client access rules](#client-access-rules-pg_hba) |
 | `monitoring` | `engine` | CloudNativePG monitoring configuration (custom queries, metrics TLS, …); `enablePodMonitor` is ignored, see [Monitoring](#monitoring) |
@@ -934,37 +944,230 @@ the standbys.
 
 ### Require TLS
 
-CloudNativePG always serves TLS, but its default `pg_hba.conf` also accepts
-unencrypted connections. Set `requireTLS: true` to refuse them:
+TLS is configured in `spec.parameters.tls`, the same fields on every
+OpenEverest provider. CloudNativePG always serves TLS, but its default
+`pg_hba.conf` also accepts unencrypted connections. Set `mode: requireTLS` to
+refuse them:
 
 ```yaml
 spec:
-  components:
-    engine:
-      parameters:
-        requireTLS: true
+  parameters:
+    tls:
+      mode: requireTLS
 ```
 
-The provider places `hostnossl all all all reject` before any rules in
+`mode` is `preferTLS` (the default: clients choose) or `requireTLS`.
+CloudNativePG can't turn TLS off, so `disabled` is refused. With `requireTLS`
+the provider places `hostnossl all all all reject` before any rules in
 `postgresql.pg_hba`. CloudNativePG applies it with a configuration reload, so
 instances are not restarted. Replication and local connections are unaffected:
 CloudNativePG's own rules for them come first and use TLS or the local socket.
 With the [`proxy` component](#connection-pooling), the provider also sets
 PgBouncer's `client_tls_sslmode` to `require`, so the pooler refuses
-unencrypted clients as well.
+unencrypted clients as well. `mode` can be changed at any time.
 
 Clients must connect with TLS. libpq's default `sslmode=prefer` does;
 `sslmode=disable` is refused. Use `sslmode=verify-full` with the cluster CA to
-also authenticate the server. The CA certificate is the `ca.crt` key in the
-`<cluster>-ca` Secret, or in the Secret named by `certificates.serverCASecret`
-when you bring your own. The connection Secret's `uri` uses `sslmode=require`;
+also authenticate the server; the [connection details](#connection-details)
+carry the CA certificate as `ca.crt`. The connection Secret's `uri` uses `sslmode=require`;
 see [Connection details](#connection-details) for how `node-postgres` treats
 that value.
 
-The UI enables this by default for new instances. Unset means off, so existing
-instances keep accepting unencrypted clients until you turn it on. When editing an
-instance, the UI shows the value in its spec, off when unset, so saving the section
-doesn't turn it on.
+The UI selects `requireTLS` by default for new instances. Unset means
+`preferTLS`, so existing instances keep accepting unencrypted clients until you
+change it. When editing an instance, the UI shows the value in its spec,
+`preferTLS` when unset, so saving the section doesn't change it.
+
+### Bring your own CA
+
+CloudNativePG issues the certificates from a CA it creates for the instance, in
+the `<cluster>-ca` Secret. To have clients connect to, say,
+`orders-db.company.com` and verify the server with your company's CA, sign the
+server certificate with that CA through a cert-manager issuer, or bring the
+certificate in a Secret. In the UI these are the **Certificates** fields of the
+**TLS** section.
+
+The server certificate comes from, in order of precedence:
+
+1. `tls.certificateSecretName`, a Secret you manage;
+2. `tls.issuer`, a cert-manager issuer the provider requests it from;
+3. otherwise CloudNativePG's own CA.
+
+The certificate source (`certificateSecretName`, `internalCertificateSecretName`
+and `issuer`) can only be set when the instance is created. The certificates
+in the Secrets can be renewed at any time, and are loaded without a restart.
+
+#### With a cert-manager issuer
+
+1. Give cert-manager the company CA (its certificate and private key) as a
+   ClusterIssuer, once per Kubernetes cluster:
+
+   ```bash
+   kubectl create secret tls company-ca -n cert-manager --cert=company-ca.crt --key=company-ca.key
+   ```
+
+   ```yaml
+   apiVersion: cert-manager.io/v1
+   kind: ClusterIssuer
+   metadata:
+     name: company-ca
+   spec:
+     ca:
+       secretName: company-ca
+   ```
+
+   A Vault or an external issuer (AWS Private CA, Google CAS, ...) that keeps
+   the CA key out of the cluster works the same way; set `issuer.group` for an
+   external one, such as `awspca.cert-manager.io`.
+
+2. Create the instance with the issuer and the names clients connect to:
+
+   ```yaml
+   spec:
+     parameters:
+       tls:
+         mode: requireTLS
+         issuer:
+           name: company-ca
+           kind: ClusterIssuer
+         additionalNames:
+           - orders-db.company.com
+   ```
+
+   [examples/instance-tls.yaml](examples/instance-tls.yaml) has both.
+
+3. Point the name at the instance: a DNS record for `orders-db.company.com` to
+   the address of a Service that exposes `<cluster>-rw` (or the pooler), for
+   example a `LoadBalancer` Service of
+   [`managed.services`](docs/reference.md#managed), or through
+   [external-dns](https://github.com/kubernetes-sigs/external-dns).
+
+The provider requests the Certificate `<cluster>-tls` from the issuer (`kind`
+is `Issuer`, in the instance's namespace, unless set). It is issued for every
+name of the instance's Services, `-rw`, `-r`, `-ro` and the poolers' `-pooler`
+and `-pooler-ro`, each as `<service>`, `<service>.<namespace>`,
+`<service>.<namespace>.svc` and `<service>.<namespace>.svc.cluster.local`,
+plus `additionalNames`. The instance waits until cert-manager has issued it.
+cert-manager renews it, and PostgreSQL and PgBouncer load the renewed
+certificate without a restart. The issuer must write its CA certificate to
+`ca.crt` in the Secret, as cert-manager's CA and Vault issuers do; an issuer
+that doesn't, such as ACME, is refused. The Secret is deleted with the
+Certificate when the instance is deleted.
+
+Clients then connect with full verification, using the company CA or `ca.crt`
+of the [connection details](#connection-details):
+
+```bash
+psql "host=orders-db.company.com user=app dbname=app sslmode=verify-full sslrootcert=company-ca.crt"
+```
+
+#### With your own Secrets
+
+`tls.certificateSecretName` names a Secret with the server certificate:
+
+```bash
+kubectl create secret generic orders-db-tls -n <namespace> \
+  --from-file=tls.crt=server-fullchain.crt \
+  --from-file=tls.key=server.key \
+  --from-file=ca.crt=company-ca.crt
+```
+
+```yaml
+spec:
+  parameters:
+    tls:
+      certificateSecretName: orders-db-tls
+      internalCertificateSecretName: orders-db-replication
+```
+
+`tls.crt` is the server certificate followed by any intermediate CA
+certificates, and `ca.crt` the CA clients trust. The certificate must be for
+server authentication and valid for the names clients connect to, such as
+`<cluster>-rw.<namespace>.svc`; `additionalNames` can't be combined with it,
+since it carries its own names. The instance waits until the Secret exists.
+The provider labels it `cnpg.io/reload`, so a renewed certificate written to
+it is loaded without a restart.
+
+`tls.internalCertificateSecretName` is optional: a Secret in the same format
+with the client certificate replicas authenticate to the primary with, issued
+to `streaming_replica` (common name) for client authentication and signed by
+the CA in its `ca.crt`, which the primary checks it against. Without it
+CloudNativePG issues the replication certificate. It can't be combined with
+the [`proxy` component](#connection-pooling): CloudNativePG issues PgBouncer's
+client certificate with the private key of the CA that signs the replication
+certificate, which the Secret doesn't carry.
+
+#### Additional names alone
+
+`tls.additionalNames` without an issuer or a Secret adds names to the
+certificate CloudNativePG issues. Changing them reissues the certificate,
+without a restart. Names must be DNS names, not IP addresses.
+
+#### Certificate checks
+
+CloudNativePG gets stuck on certificates it can't use, and some it accepts
+still break replicas or clients. The provider checks the certificate Secrets
+once they exist, and the `Instance` reports what is wrong in its `Ready`
+condition instead of applying them:
+
+- the certificate (`tls.crt`) and its key (`tls.key`) belong together;
+- it chains to `ca.crt` for server authentication (client authentication for
+  the replication certificate), through intermediate CA certificates that
+  follow it in `tls.crt`, and is valid now;
+- `ca.crt` holds the root of that chain: libpq, which replicas and most
+  clients use, does not trust a chain that ends at an intermediate CA;
+- the server certificate is valid for a name of the `-rw` Service, such as
+  `<cluster>-rw.<namespace>.svc`;
+- the replication certificate is issued to `streaming_replica`.
+
+A Secret named like the ones CloudNativePG writes for the instance
+(`<cluster>-ca`, `<cluster>-server`, `<cluster>-replication`) is refused at
+admission: CloudNativePG would overwrite it. While cert-manager has not issued
+the certificate of `tls.issuer`, the `Instance` says why, for example that the
+issuer does not exist or is not ready. A change of the certificate source is
+refused at admission, and otherwise reported before the provider applies it.
+
+#### Migrating from requireTLS and certificates
+
+Earlier releases set TLS in the engine parameters. Those fields are removed:
+an Instance that still sets them is refused at admission, and a running one is
+not reconciled, reporting why in its `Ready` condition, until it is updated.
+
+| Before (`spec.components.engine.parameters`) | Now (`spec.parameters.tls`) |
+|---|---|
+| `requireTLS: true` | `mode: requireTLS` |
+| `requireTLS: false` or unset | `mode: preferTLS`, or unset |
+| `certificates.serverTLSSecret` and `serverCASecret` | `certificateSecretName`: one Secret with `tls.crt`, `tls.key` and `ca.crt` |
+| `certificates.replicationTLSSecret` and `clientCASecret` | `internalCertificateSecretName`: one Secret with `tls.crt`, `tls.key` and `ca.crt` |
+| `certificates.serverAltDNSNames` | `additionalNames` |
+
+Moving the same Secrets is not a change of the certificate source, so it is
+allowed on a running instance. Where the CA was in a separate Secret, add its
+certificate as `ca.crt` to the certificate Secret first. A CA CloudNativePG
+issued certificates with (`serverCASecret` or `clientCASecret` with `ca.key`,
+and no certificate Secret) has no equivalent: to keep the instance on it, use
+a cert-manager CA issuer with that CA for new instances. For example:
+
+```yaml
+# Before
+spec:
+  components:
+    engine:
+      parameters:
+        requireTLS: true
+        certificates:
+          serverTLSSecret: orders-db-tls
+          serverCASecret: orders-db-tls
+# After
+spec:
+  parameters:
+    tls:
+      mode: requireTLS
+      certificateSecretName: orders-db-tls
+  components:
+    engine:
+      parameters: {}
+```
 
 ### Client access rules (pg_hba)
 
@@ -991,7 +1194,7 @@ spec:
   default rule, `host all all all scram-sha-256`, comes last: anything no
   record matches is still let in with a password. To allow only what is
   listed, end with a `reject` record, such as `host all all all reject`.
-- With [`requireTLS`](#require-tls), `hostnossl all all all reject` goes before
+- With [`tls.mode: requireTLS`](#require-tls), `hostnossl all all all reject` goes before
   the records, so a `host` record can't admit unencrypted clients.
 - Allowed: `host`, `hostssl` and `hostnossl` records; an address that is `all`,
   `samehost`, `samenet`, a CIDR range, an IP address and netmask, or a host
@@ -1016,11 +1219,11 @@ the rest of the platform's configuration.
 [examples/policy-require-tls.yaml](examples/policy-require-tls.yaml) is one
 for Kyverno, a `ValidatingPolicy` tested with Kyverno 1.19:
 
-- Creating an Instance without `requireTLS: true`, or turning it off on one
-  that has it, is refused with a message saying what to set.
+- Creating an Instance without `spec.parameters.tls.mode: requireTLS`, or
+  changing it on one that has it, is refused with a message saying what to set.
 - Instances that already accept unencrypted clients keep working: their
-  updates, including the provider's own, are allowed until you turn
-  `requireTLS` on. The policy's background scan lists them in PolicyReports
+  updates, including the provider's own, are allowed until you set
+  `requireTLS`. The policy's background scan lists them in PolicyReports
   (`kubectl get policyreports -A`), so they can be found and fixed.
 - Instances of other providers aren't affected.
 

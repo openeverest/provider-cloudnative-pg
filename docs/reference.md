@@ -14,6 +14,7 @@ The fields of the Instance itself (`spec.version`, `spec.components.<name>.repli
 
 - [Versions](#versions)
 - [Topologies](#topologies)
+- [Instance parameters](#instance-parameters)
 - [Component engine (postgresql)](#component-engine-postgresql)
 - [Component proxy (pgbouncer)](#component-proxy-pgbouncer)
 - [Topology replicaSet](#topology-replicaset)
@@ -41,6 +42,86 @@ The fields of the Instance itself (`spec.version`, `spec.components.<name>.repli
 |---|---|---|---|
 | `replicaSet` | `engine` | postgresql |  |
 | `replicaSet` | `proxy` | pgbouncer | yes |
+
+## Instance parameters
+
+Set in `spec.parameters` of an Instance.
+
+### `tls`
+
+`object`
+
+TLS configures encryption in transit between clients and the instance.
+
+#### `tls.additionalNames`
+
+`[]string`
+
+AdditionalNames are DNS names the server certificate is valid for
+besides those of the instance's Services, such as an external name
+clients connect to. Used with issuer or the certificate CloudNativePG
+issues; cannot be combined with certificateSecretName, whose
+certificate carries its own names. Changing them reissues the
+certificate without a restart.
+
+#### `tls.certificateSecretName`
+
+`string`
+
+CertificateSecretName names a Secret in the instance namespace with the
+server certificate, followed by any intermediate CA certificates
+(tls.crt), its private key (tls.key) and the CA certificate clients
+verify it with (ca.crt). The certificate must be valid for the names
+clients connect to, such as &lt;instance&gt;-rw.&lt;namespace&gt;.svc. Cannot be
+combined with issuer or additionalNames.
+
+#### `tls.internalCertificateSecretName`
+
+`string`
+
+InternalCertificateSecretName names a Secret in the instance namespace
+with the client certificate replicas authenticate to the primary with,
+in the same format: issued to the streaming_replica user (common name)
+for client authentication, and signed by the CA in its ca.crt. Without
+it CloudNativePG issues the replication certificate. Cannot be combined
+with the proxy component, whose client certificate CloudNativePG issues
+with the private key of that CA.
+
+#### `tls.issuer`
+
+`object`
+
+Issuer is the cert-manager issuer that signs the server certificate,
+instead of the CA CloudNativePG creates. The provider requests it as
+the Certificate &lt;instance&gt;-tls and cert-manager renews it. The issuer
+must write its CA certificate to ca.crt, as the CA and Vault issuers do.
+
+#### `tls.issuer.group`
+
+`string` · default `"cert-manager.io"`
+
+Group is the API group of an external issuer, such as
+awspca.cert-manager.io.
+
+#### `tls.issuer.kind`
+
+`string` · default `"Issuer"`
+
+Kind of the issuer: Issuer or ClusterIssuer, or the kind of an
+external issuer of group.
+
+#### `tls.issuer.name`
+
+`string` · required
+
+Name of the issuer.
+
+#### `tls.mode`
+
+`string` · default `"preferTLS"`
+
+Mode controls which client connections must use TLS: preferTLS or
+requireTLS. Changing it is applied without a restart.
 
 ## Component engine (postgresql)
 
@@ -1354,71 +1435,6 @@ database and owner.
 
 Name of the VolumeSnapshot.
 
-### `certificates`
-
-`object`
-
-Certificates are the TLS certificates of the instance (CNPG
-certificates). Without them CNPG issues and rotates its own.
-serverTLSSecret needs serverCASecret and cannot be combined with
-serverAltDNSNames; replicationTLSSecret needs clientCASecret.
-
-#### `certificates.clientCASecret`
-
-`string`
-
-The secret containing the Client CA certificate. If not defined, a new secret will be created
-with a self-signed CA and will be used to generate all the client certificates.&lt;br /&gt;
-&lt;br /&gt;
-Contains:&lt;br /&gt;
-&lt;br /&gt;
-- `ca.crt`: CA that should be used to validate the client certificates,
-
-used as `ssl_ca_file` of all the instances.&lt;br /&gt;
-- `ca.key`: key used to generate client certificates, if ReplicationTLSSecret is provided,
-
-this can be omitted.&lt;br /&gt;
-
-#### `certificates.replicationTLSSecret`
-
-`string`
-
-The secret of type kubernetes.io/tls containing the client certificate to authenticate as
-the `streaming_replica` user.
-If not defined, ClientCASecret must provide also `ca.key`, and a new secret will be
-created using the provided CA.
-
-#### `certificates.serverAltDNSNames`
-
-`[]string`
-
-The list of the server alternative DNS names to be added to the generated server TLS certificates, when required.
-
-#### `certificates.serverCASecret`
-
-`string`
-
-The secret containing the Server CA certificate. If not defined, a new secret will be created
-with a self-signed CA and will be used to generate the TLS certificate ServerTLSSecret.&lt;br /&gt;
-&lt;br /&gt;
-Contains:&lt;br /&gt;
-&lt;br /&gt;
-- `ca.crt`: CA that should be used to validate the server certificate,
-
-used as `sslrootcert` in client connection strings.&lt;br /&gt;
-- `ca.key`: key used to generate Server SSL certs, if ServerTLSSecret is provided,
-
-this can be omitted.&lt;br /&gt;
-
-#### `certificates.serverTLSSecret`
-
-`string`
-
-The secret of type kubernetes.io/tls containing the server TLS certificate and key that will be set as
-`ssl_cert_file` and `ssl_key_file` so that clients can connect to postgres securely.
-If not defined, ServerCASecret must provide also `ca.key` and a new secret will be
-created using the provided CA.
-
 ### `extensions`
 
 `object`
@@ -2453,10 +2469,10 @@ PostgreSQL is CNPG's PostgreSQL configuration: parameters
 (postgresql.conf), pg_hba and pg_ident records, synchronous
 replication, shared_preload_libraries, LDAP and more. CNPG manages a
 fixed set of parameters itself and rejects them here. The provider adds
-the records of requireTLS and pgHBA, the parameters and libraries of
-enabled extensions and replication slot settings. pg_hba cannot be
-combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
-for parameters that need it.
+the records of spec.parameters.tls.mode and pgHBA, the parameters and
+libraries of enabled extensions and replication slot settings. pg_hba
+cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
+instances for parameters that need it.
 
 #### `postgresql.enableAlterSystem`
 
@@ -3085,15 +3101,6 @@ List of regular expression patterns to match the names of replication slots to b
 
 Standby will update the status of the local replication slots
 every `updateInterval` seconds (default 30).
-
-### `requireTLS`
-
-`boolean`
-
-RequireTLS rejects client connections that do not use TLS by placing a
-"hostnossl all all all reject" rule before the user's pg_hba rules.
-Unset or false keeps CNPG's default, which also accepts unencrypted
-connections. Applied by CNPG with a configuration reload, no restart.
 
 ### `resizeInUseVolumes`
 

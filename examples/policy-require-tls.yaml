@@ -1,12 +1,12 @@
-# Makes requireTLS mandatory for CloudNativePG Instances, including the ones
+# Makes spec.parameters.tls.mode requireTLS mandatory for CloudNativePG Instances, including the ones
 # created from Git, which don't get the UI's default. See "Require TLS" in the
 # README.
 #
-# - Creating an Instance without `requireTLS: true`, or turning it off on one
+# - Creating an Instance without `tls.mode: requireTLS`, or changing it on one
 #   that has it, is refused.
 # - Instances that already accept unencrypted clients keep working: their
 #   updates, including the controllers' own, are allowed until requireTLS is
-#   turned on. The background scan lists them in PolicyReports
+#   set. The background scan lists them in PolicyReports
 #   (`kubectl get policyreports -A`).
 #
 # A Kyverno ValidatingPolicy (policies.kyverno.io/v1, tested with Kyverno
@@ -37,7 +37,7 @@ metadata:
     policies.kyverno.io/severity: high
     policies.kyverno.io/description: >-
       CloudNativePG Instances must refuse unencrypted client connections:
-      spec.components.engine.parameters.requireTLS must be true.
+      spec.parameters.tls.mode must be requireTLS.
 spec:
   validationActions: [Deny]
   evaluation:
@@ -54,17 +54,17 @@ spec:
       expression: object.spec.providerRef.name == 'provider-cloudnative-pg'
   variables:
     - name: requiresTLS
-      expression: object.spec.?components[?'engine'].?parameters.?requireTLS.orValue(false) == true
+      expression: object.spec.?parameters.?tls.?mode.orValue('preferTLS') == 'requireTLS'
     # An update to an Instance that didn't require TLS before is allowed, so
     # existing Instances aren't blocked; one that did can't turn it off. On
     # creation there's no old object (Kyverno passes an empty one).
     - name: existingViolation
       expression: >-
         oldObject != null && has(oldObject.spec) &&
-        oldObject.spec.?components[?'engine'].?parameters.?requireTLS.orValue(false) != true
+        oldObject.spec.?parameters.?tls.?mode.orValue('preferTLS') != 'requireTLS'
   validations:
     - expression: variables.requiresTLS || variables.existingViolation
-      message: CloudNativePG Instances must set spec.components.engine.parameters.requireTLS to true
+      message: CloudNativePG Instances must set spec.parameters.tls.mode to requireTLS
       messageExpression: >-
         "Instance " + object.metadata.name + " must refuse unencrypted connections:
-        set spec.components.engine.parameters.requireTLS to true"
+        set spec.parameters.tls.mode to requireTLS"

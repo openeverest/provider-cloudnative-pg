@@ -131,8 +131,9 @@ presets:
               memory: 4Gi
           storage:
             size: 25Gi
-          parameters:
-            requireTLS: true
+      parameters:
+        tls:
+          mode: requireTLS
 
 # Images of the first-class image-volume extensions (PostgreSQL 18+), as a
 # CloudNativePG ClusterImageCatalog. The provider copies the entry of each

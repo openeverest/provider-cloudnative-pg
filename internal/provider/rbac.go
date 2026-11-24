@@ -60,6 +60,11 @@ package provider
 // Secrets (CNPG credentials in Status(), connection secret in provider-runtime):
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
+// cert-manager Certificates of tls.issuer, read uncached:
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;create;update;patch
+// The issuer of tls.issuer, read to tell why a Certificate is not issued:
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;clusterissuers,verbs=get
+
 // Pods (the runtime counts labelled component pods into Instance status.components):
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 

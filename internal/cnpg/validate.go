@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 
-	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -35,11 +34,6 @@ func ValidateCustomSpec(custom *components.CNPGCustomSpec) error {
 			return err
 		}
 	}
-	if custom.Certificates != nil {
-		if err := ValidateCertificates(custom.Certificates); err != nil {
-			return err
-		}
-	}
 	if strings.TrimSpace(custom.PgHBA) != "" {
 		if custom.PostgresConfiguration != nil && len(custom.PostgresConfiguration.PgHBA) > 0 {
 			return fmt.Errorf("pgHBA cannot be combined with postgresql.pg_hba; move the rules to pgHBA")
@@ -48,23 +42,6 @@ func ValidateCustomSpec(custom *components.CNPGCustomSpec) error {
 			return err
 		}
 	}
-	return nil
-}
-
-func ValidateCertificates(certificates *cnpgv1.CertificatesConfiguration) error {
-	if certificates.ServerTLSSecret != "" {
-		if len(certificates.ServerAltDNSNames) != 0 {
-			return fmt.Errorf("server alternative DNS names cannot be specified when server TLS secret is provided")
-		}
-		if certificates.ServerCASecret == "" {
-			return fmt.Errorf("server CA secret is required when server TLS secret is provided")
-		}
-	}
-
-	if certificates.ReplicationTLSSecret != "" && certificates.ClientCASecret == "" {
-		return fmt.Errorf("client CA secret is required when replication TLS secret is provided")
-	}
-
 	return nil
 }
 
