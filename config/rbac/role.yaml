@@ -34,7 +34,6 @@ rules:
   - secrets
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
@@ -127,7 +126,6 @@ rules:
   - certificates
   verbs:
   - create
-  - delete
   - get
   - patch
   - update

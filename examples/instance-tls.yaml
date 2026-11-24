@@ -1,0 +1,44 @@
+# Bring your own CA: the company CA signs the server certificate through a
+# cert-manager ClusterIssuer, and clients connect to orders-db.company.com
+# with sslmode=verify-full. See "Bring your own CA" in the README.
+#
+# The CA certificate and key go to cert-manager first:
+#   kubectl create secret tls company-ca -n cert-manager --cert=company-ca.crt --key=company-ca.key
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: company-ca
+spec:
+  ca:
+    secretName: company-ca
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: orders-db
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      mode: requireTLS
+      issuer:
+        name: company-ca
+        kind: ClusterIssuer
+      # Names clients connect to besides the instance's Services; point them
+      # at the instance, for example with a LoadBalancer Service.
+      additionalNames:
+        - orders-db.company.com
+  components:
+    engine:
+      type: postgresql
+      replicas: 3
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 5Gi

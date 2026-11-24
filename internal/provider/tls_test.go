@@ -2,24 +2,15 @@ package provider
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/cloudnative-pg/cloudnative-pg/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,7 +19,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition"
 )
 
 func tlsScheme(t *testing.T) *runtime.Scheme {
@@ -55,12 +46,14 @@ func testCluster() *cnpgv1.Cluster {
 	return &cnpgv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace}}
 }
 
+func issuerTLS(name, kind string) definition.TLSParameters {
+	return definition.TLSParameters{Issuer: &definition.IssuerReference{Name: name, Kind: definition.IssuerKind(kind), Group: "cert-manager.io"}}
+}
+
 func TestServerCertificate(t *testing.T) {
 	c, _ := tlsContext(t)
-	tls := &components.TLSSpec{
-		Issuer:        &components.IssuerReference{Name: "acme"},
-		ExtraDNSNames: []string{"db.example.com"},
-	}
+	tls := issuerTLS("acme", "Issuer")
+	tls.AdditionalNames = []string{"db.example.com"}
 	certificate := serverCertificate(c, testCluster(), tls)
 
 	if certificate.Name != "pg-tls" || certificate.Spec.SecretName != "pg-tls" {
@@ -88,14 +81,14 @@ func TestServerCertificate(t *testing.T) {
 }
 
 func TestSyncIssuedCertificate(t *testing.T) {
-	tls := &components.TLSSpec{Issuer: &components.IssuerReference{Name: "acme", Kind: "ClusterIssuer"}}
+	tls := issuerTLS("acme", "ClusterIssuer")
 	issued := func(data map[string][]byte) *corev1.Secret {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "pg-tls", Namespace: testNamespace}, Data: data}
 	}
 
 	t.Run("waits for cert-manager to issue it", func(t *testing.T) {
 		c, cl := tlsContext(t)
-		err := syncServerCertificate(c, testCluster(), tls)
+		err := syncCertificates(c, testCluster(), tls)
 		if !controller.IsWaitError(err) || !strings.Contains(err.Error(), "Certificate pg-tls") {
 			t.Fatalf("error = %v, want a wait for the Certificate pg-tls", err)
 		}
@@ -110,7 +103,7 @@ func TestSyncIssuedCertificate(t *testing.T) {
 
 	t.Run("refuses an issuer that writes no CA certificate", func(t *testing.T) {
 		c, _ := tlsContext(t, issued(map[string][]byte{"tls.crt": []byte("c"), "tls.key": []byte("k")}))
-		err := syncServerCertificate(c, testCluster(), tls)
+		err := syncCertificates(c, testCluster(), tls)
 		if err == nil || controller.IsWaitError(err) || !strings.Contains(err.Error(), "writes no CA certificate") {
 			t.Fatalf("error = %v, want one about the missing ca.crt", err)
 		}
@@ -118,7 +111,7 @@ func TestSyncIssuedCertificate(t *testing.T) {
 
 	t.Run("makes the Certificate own its Secret", func(t *testing.T) {
 		c, cl := tlsContext(t, issued(map[string][]byte{"tls.crt": []byte("c"), "tls.key": []byte("k"), "ca.crt": []byte("ca")}))
-		if err := syncServerCertificate(c, testCluster(), tls); err != nil {
+		if err := syncCertificates(c, testCluster(), tls); err != nil {
 			t.Fatal(err)
 		}
 		secret := &corev1.Secret{}
@@ -132,88 +125,43 @@ func TestSyncIssuedCertificate(t *testing.T) {
 }
 
 func TestLabelCertificateSecret(t *testing.T) {
-	tls := &components.TLSSpec{CertificateSecretName: "mine"}
+	tls := definition.TLSParameters{CertificateSecretName: "mine", InternalCertificateSecretName: "repl"}
 
 	t.Run("waits for the Secret", func(t *testing.T) {
 		c, _ := tlsContext(t)
-		err := syncServerCertificate(c, testCluster(), tls)
+		err := syncCertificates(c, testCluster(), tls)
 		if !controller.IsWaitError(err) || !strings.Contains(err.Error(), "Secret mine") {
 			t.Fatalf("error = %v, want a wait for the Secret mine", err)
 		}
 	})
 
-	t.Run("labels it for reload", func(t *testing.T) {
-		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: testNamespace, Labels: map[string]string{"team": "db"}}}
-		c, cl := tlsContext(t, secret)
-		if err := syncServerCertificate(c, testCluster(), tls); err != nil {
+	t.Run("labels both for reload", func(t *testing.T) {
+		server := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: testNamespace, Labels: map[string]string{"team": "db"}}}
+		replication := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "repl", Namespace: testNamespace}}
+		c, cl := tlsContext(t, server, replication)
+		if err := syncCertificates(c, testCluster(), tls); err != nil {
 			t.Fatal(err)
 		}
-		if err := cl.Get(context.Background(), client.ObjectKeyFromObject(secret), secret); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := secret.Labels[utils.WatchedLabelName]; !ok || secret.Labels["team"] != "db" {
-			t.Fatalf("labels = %v, want %s added to the user's", secret.Labels, utils.WatchedLabelName)
-		}
-	})
-}
-
-func TestDeleteUnusedServerCertificate(t *testing.T) {
-	certificate := func(owner *corev1alpha1.Instance) *cmv1.Certificate {
-		cert := &cmv1.Certificate{ObjectMeta: metav1.ObjectMeta{Name: "pg-tls", Namespace: testNamespace}}
-		if owner != nil {
-			cert.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(owner, corev1alpha1.GroupVersion.WithKind("Instance"))}
-		}
-		return cert
-	}
-	usedBy := func(secret string) *cnpgv1.Cluster {
-		pg := testCluster()
-		pg.Status.Certificates.ServerTLSSecret = secret
-		return pg
-	}
-	instance := &corev1alpha1.Instance{ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace, UID: "instance-uid"}}
-
-	tests := []struct {
-		name        string
-		tls         *components.TLSSpec
-		certificate *cmv1.Certificate
-		cluster     *cnpgv1.Cluster
-		wantDeleted bool
-	}{
-		{name: "none requested"},
-		{
-			name: "still set", tls: &components.TLSSpec{Issuer: &components.IssuerReference{Name: "acme"}},
-			certificate: certificate(instance), cluster: usedBy("pg-tls"),
-		},
-		{name: "still used by the Cluster", certificate: certificate(instance), cluster: usedBy("pg-tls")},
-		{name: "not the provider's", certificate: certificate(nil), cluster: usedBy("pg-server")},
-		{name: "unused", certificate: certificate(instance), cluster: usedBy("pg-server"), wantDeleted: true},
-		{
-			name: "replaced by a certificate secret", tls: &components.TLSSpec{CertificateSecretName: "mine"},
-			certificate: certificate(instance), cluster: usedBy("mine"), wantDeleted: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var objects []client.Object
-			if tt.certificate != nil {
-				objects = append(objects, tt.certificate)
-			}
-			if tt.cluster != nil {
-				objects = append(objects, tt.cluster)
-			}
-			c, cl := tlsContext(t, objects...)
-			if err := deleteUnusedServerCertificate(c, tt.tls); err != nil {
+		for _, secret := range []*corev1.Secret{server, replication} {
+			if err := cl.Get(context.Background(), client.ObjectKeyFromObject(secret), secret); err != nil {
 				t.Fatal(err)
 			}
-			if tt.certificate == nil {
-				return
+			if _, ok := secret.Labels[utils.WatchedLabelName]; !ok {
+				t.Fatalf("labels of %s = %v, want %s", secret.Name, secret.Labels, utils.WatchedLabelName)
 			}
-			err := cl.Get(context.Background(), client.ObjectKeyFromObject(tt.certificate), &cmv1.Certificate{})
-			if deleted := apierrors.IsNotFound(err); deleted != tt.wantDeleted {
-				t.Fatalf("deleted = %t (err %v), want %t", deleted, err, tt.wantDeleted)
-			}
-		})
-	}
+		}
+		if server.Labels["team"] != "db" {
+			t.Fatalf("labels = %v, want the user's kept", server.Labels)
+		}
+	})
+
+	t.Run("waits for the internal Secret", func(t *testing.T) {
+		c, _ := tlsContext(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: testNamespace}})
+		err := syncCertificates(c, testCluster(), tls)
+		if !controller.IsWaitError(err) || !strings.Contains(err.Error(), "Secret repl of spec.parameters.tls.internalCertificateSecretName") {
+			t.Fatalf("error = %v, want a wait for the Secret repl", err)
+		}
+	})
 }
 
 func TestCertificateWaitNamesTheIssuerProblem(t *testing.T) {
@@ -225,21 +173,21 @@ func TestCertificateWaitNamesTheIssuerProblem(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
-		issuer  components.IssuerReference
+		issuer  definition.TLSParameters
 		objects []client.Object
 		want    string
 	}{
-		{name: "missing ClusterIssuer", issuer: components.IssuerReference{Name: "nope", Kind: "ClusterIssuer"}, want: "the ClusterIssuer nope does not exist"},
-		{name: "missing Issuer", issuer: components.IssuerReference{Name: "nope"}, want: "the Issuer nope does not exist in namespace ns"},
+		{name: "missing ClusterIssuer", issuer: issuerTLS("nope", "ClusterIssuer"), want: "the ClusterIssuer nope does not exist"},
+		{name: "missing Issuer", issuer: issuerTLS("nope", "Issuer"), want: "the Issuer nope does not exist in namespace ns"},
 		{
-			name: "issuer not ready", issuer: components.IssuerReference{Name: "databases-ca"}, objects: []client.Object{notReady},
+			name: "issuer not ready", issuer: issuerTLS("databases-ca", "Issuer"), objects: []client.Object{notReady},
 			want: "the Issuer databases-ca is not ready: Error getting keypair for CA issuer",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, _ := tlsContext(t, tt.objects...)
-			err := syncServerCertificate(c, testCluster(), &components.TLSSpec{Issuer: &tt.issuer})
+			err := syncCertificates(c, testCluster(), tt.issuer)
 			if !controller.IsWaitError(err) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want a wait saying %q", err, tt.want)
 			}
@@ -247,193 +195,70 @@ func TestCertificateWaitNamesTheIssuerProblem(t *testing.T) {
 	}
 }
 
-func TestValidateCertificatesSecrets(t *testing.T) {
-	withoutKey := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "client-ca", Namespace: testNamespace},
-		Data:       map[string][]byte{"ca.crt": selfSignedCA(t)},
-	}
-	certificates := &cnpgv1.CertificatesConfiguration{ClientCASecret: "client-ca", ReplicationTLSSecret: "replication"}
-
-	t.Run("client CA without key and no proxy", func(t *testing.T) {
-		c, _ := tlsContext(t, withoutKey)
-		if err := validateCertificatesSecrets(c, &components.CNPGCustomSpec{Certificates: certificates}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("client CA without key and a proxy", func(t *testing.T) {
-		c, _ := tlsContext(t, withoutKey)
-		c.Instance().Spec.Components = map[string]corev1alpha1.ComponentSpec{"proxy": {}}
-		err := validateCertificatesSecrets(c, &components.CNPGCustomSpec{Certificates: certificates})
-		if err == nil || !strings.Contains(err.Error(), "has no ca.key") || !strings.Contains(err.Error(), "client certificate of the proxy component's PgBouncer") {
-			t.Fatalf("error = %v, want one about PgBouncer's client certificate", err)
-		}
-	})
-
-	t.Run("missing Secrets are left to CloudNativePG", func(t *testing.T) {
-		c, _ := tlsContext(t)
-		c.Instance().Spec.Components = map[string]corev1alpha1.ComponentSpec{"proxy": {}}
-		custom := &components.CNPGCustomSpec{Certificates: &cnpgv1.CertificatesConfiguration{
-			ServerTLSSecret: "server", ServerCASecret: "server-ca", ClientCASecret: "client-ca",
-		}}
-		if err := validateCertificatesSecrets(c, custom); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if err := validateTLSSecret(c, &components.TLSSpec{CertificateSecretName: "mine"}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func selfSignedCA(t *testing.T) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Test CA"}, IsCA: true, BasicConstraintsValid: true,
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-// testCA is a CA that signs leaf certificates for the tests.
-type testCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-	pem  []byte
-}
-
-func newTestCA(t *testing.T, name string) testCA {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, IsCA: true, BasicConstraintsValid: true,
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return testCA{cert: cert, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
-}
-
-func (ca testCA) sign(t *testing.T, name string) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, DNSNames: []string{name},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &key.PublicKey, ca.key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-func TestReissueStaleCertificates(t *testing.T) {
-	oldCA, newCA := newTestCA(t, "pg"), newTestCA(t, "Acme Root CA")
-	caSecret := func(name string, ca testCA) *corev1.Secret {
-		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}, Data: map[string][]byte{"ca.crt": ca.pem}}
-	}
-	cluster := func(spec *cnpgv1.CertificatesConfiguration, observedServerCA, observedClientCA string) *cnpgv1.Cluster {
+func TestValidateTLSChange(t *testing.T) {
+	cluster := func(certificates *cnpgv1.CertificatesConfiguration) *cnpgv1.Cluster {
 		pg := testCluster()
-		pg.UID = "cluster-uid"
-		pg.Spec.Certificates = spec
-		pg.Status.Certificates.ServerCASecret = observedServerCA
-		pg.Status.Certificates.ClientCASecret = observedClientCA
+		pg.Spec.Certificates = certificates
 		return pg
 	}
-	issued := func(pg *cnpgv1.Cluster, name string, by testCA) *corev1.Secret {
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
-			Data:       map[string][]byte{"tls.crt": by.sign(t, "pg-rw")},
+	issued := func(kind string) *cmv1.Certificate {
+		return &cmv1.Certificate{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-tls", Namespace: testNamespace},
+			Spec:       cmv1.CertificateSpec{IssuerRef: cmmeta.IssuerReference{Name: "acme", Kind: kind}},
 		}
-		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(pg, cnpgv1.SchemeGroupVersion.WithKind(cnpgv1.ClusterKind))}
-		return secret
 	}
-	ownCA := &cnpgv1.CertificatesConfiguration{ServerCASecret: "acme-ca", ClientCASecret: "acme-ca"}
-
+	issuerCertificates := &cnpgv1.CertificatesConfiguration{ServerTLSSecret: "pg-tls", ServerCASecret: "pg-tls"}
 	tests := []struct {
-		name        string
-		pg          *cnpgv1.Cluster
-		secrets     func(pg *cnpgv1.Cluster) []client.Object
-		wantDeleted []string
-		wantKept    []string
+		name    string
+		tls     definition.TLSParameters
+		objects []client.Object
+		wantErr string
 	}{
-		{
-			name: "switched to a CA it issues with", pg: cluster(ownCA, "acme-ca", "acme-ca"),
-			secrets: func(pg *cnpgv1.Cluster) []client.Object {
-				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
-			},
-			wantDeleted: []string{"pg-server", "pg-replication"},
-		},
-		{
-			name: "switched back to its own CA", pg: cluster(nil, "pg-ca", "pg-ca"),
-			secrets: func(pg *cnpgv1.Cluster) []client.Object {
-				return []client.Object{caSecret("pg-ca", oldCA), issued(pg, "pg-server", newCA), issued(pg, "pg-replication", oldCA)}
-			},
-			wantDeleted: []string{"pg-server"}, wantKept: []string{"pg-replication"},
-		},
-		{
-			name: "CloudNativePG has not seen the new CA", pg: cluster(ownCA, "pg-ca", "pg-ca"),
-			secrets: func(pg *cnpgv1.Cluster) []client.Object {
-				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
-			},
-			wantKept: []string{"pg-server", "pg-replication"},
-		},
-		{
-			name: "supplied certificates", pg: cluster(&cnpgv1.CertificatesConfiguration{
-				ServerTLSSecret: "mine", ServerCASecret: "acme-ca", ClientCASecret: "acme-ca", ReplicationTLSSecret: "repl",
-			}, "acme-ca", "acme-ca"),
-			secrets: func(pg *cnpgv1.Cluster) []client.Object {
-				return []client.Object{caSecret("acme-ca", newCA), issued(pg, "pg-server", oldCA), issued(pg, "pg-replication", oldCA)}
-			},
-			wantKept: []string{"pg-server", "pg-replication"},
-		},
-		{
-			name: "not CloudNativePG's", pg: cluster(ownCA, "acme-ca", "acme-ca"),
-			secrets: func(pg *cnpgv1.Cluster) []client.Object {
-				server := issued(pg, "pg-server", oldCA)
-				server.OwnerReferences = nil
-				return []client.Object{caSecret("acme-ca", newCA), server}
-			},
-			wantKept: []string{"pg-server"},
-		},
+		{name: "no Cluster yet", tls: definition.TLSParameters{CertificateSecretName: "mine"}},
+		{name: "CloudNativePG's with more names", tls: definition.TLSParameters{AdditionalNames: []string{"db.example.com"}},
+			objects: []client.Object{cluster(nil)}},
+		{name: "same issuer", tls: issuerTLS("acme", "Issuer"), objects: []client.Object{cluster(issuerCertificates), issued("")}},
+		{name: "the certificates of an earlier release",
+			tls: definition.TLSParameters{CertificateSecretName: "mine", InternalCertificateSecretName: "repl"},
+			objects: []client.Object{cluster(&cnpgv1.CertificatesConfiguration{
+				ServerTLSSecret: "mine", ServerCASecret: "mine-ca", ReplicationTLSSecret: "repl", ClientCASecret: "repl-ca",
+			})}},
+		{name: "a secret on CloudNativePG's", tls: definition.TLSParameters{CertificateSecretName: "mine"},
+			objects: []client.Object{cluster(nil)}, wantErr: "the CA CloudNativePG created for it"},
+		{name: "a secret instead of the issuer", tls: definition.TLSParameters{CertificateSecretName: "mine"},
+			objects: []client.Object{cluster(issuerCertificates)}, wantErr: "its cert-manager issuer"},
+		{name: "another issuer kind", tls: issuerTLS("acme", "ClusterIssuer"),
+			objects: []client.Object{cluster(issuerCertificates), issued("Issuer")}, wantErr: "issued by the Issuer acme of cert-manager.io"},
+		{name: "a replication certificate", tls: definition.TLSParameters{InternalCertificateSecretName: "repl"},
+			objects: []client.Object{cluster(nil)}, wantErr: "replicas authenticate with"},
+		{name: "off the CA of an earlier release's serverCASecret", tls: definition.TLSParameters{},
+			objects: []client.Object{cluster(&cnpgv1.CertificatesConfiguration{ServerCASecret: "own-ca"})}, wantErr: "from the CA of the Secret own-ca"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, cl := tlsContext(t, append([]client.Object{tt.pg}, tt.secrets(tt.pg)...)...)
-			if err := reissueStaleCertificates(c, tt.pg); err != nil {
+			c, _ := tlsContext(t, tt.objects...)
+			errs, err := validateTLSChange(c, tt.tls)
+			if err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range tt.wantDeleted {
-				err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &corev1.Secret{})
-				if !apierrors.IsNotFound(err) {
-					t.Errorf("%s was not deleted (err %v)", name, err)
+			got := errs.ToAggregate()
+			if tt.wantErr == "" {
+				if got != nil {
+					t.Fatalf("unexpected error: %v", got)
 				}
+				return
 			}
-			for _, name := range tt.wantKept {
-				if err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &corev1.Secret{}); err != nil {
-					t.Errorf("%s was deleted: %v", name, err)
-				}
+			if got == nil || !strings.Contains(got.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want one containing %q", got, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateCertificateSecretsLeavesMissingOnesToSync(t *testing.T) {
+	c, _ := tlsContext(t)
+	errs, err := validateCertificateSecrets(c, definition.TLSParameters{CertificateSecretName: "mine", InternalCertificateSecretName: "repl"})
+	if err != nil || len(errs) > 0 {
+		t.Fatalf("errs = %v, err = %v", errs, err)
 	}
 }

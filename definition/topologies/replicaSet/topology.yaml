@@ -688,25 +688,30 @@ ui:
             - resources
     tls:
       label: "TLS"
-      description: "Encrypt client connections and choose the certificate the instance presents to clients."
+      description: "Encrypt client connections and choose the certificates of the instance."
       components:
-        requireTLS:
-          uiType: toggle
-          path: spec.components.engine.parameters.requireTLS
+        mode:
+          uiType: select
+          path: spec.parameters.tls.mode
           fieldParams:
-            label: "Require TLS for client connections"
-            helperText: "Rejects unencrypted connections. Clients must connect with TLS; libpq's default sslmode=prefer does, sslmode=disable is refused. Applied without a restart."
-            defaultValue: true
+            label: "TLS mode"
+            helperText: "CloudNativePG always serves TLS. Required rejects unencrypted clients at PostgreSQL and PgBouncer: libpq's default sslmode=prefer connects, sslmode=disable is refused. Applied without a restart."
+            defaultValue: "requireTLS"
+            options:
+              - label: "Required: clients must use TLS"
+                value: "requireTLS"
+              - label: "Preferred: clients choose whether to use TLS"
+                value: "preferTLS"
             modes:
               edit:
-                # Edit forms leave unset fields undefined, so the toggle would fall back to
-                # true and saving the section would turn TLS-only on. Unset means off.
-                defaultValue: false
+                # Edit forms leave unset fields undefined, so the select would fall back to
+                # requireTLS and saving the section would turn it on. Unset means preferTLS.
+                defaultValue: "preferTLS"
         certificates:
           uiType: group
           groupType: bordered
-          label: "Server certificate"
-          description: "Leave empty to have CloudNativePG issue the certificate from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Changing it is applied without a restart."
+          label: "Certificates"
+          description: "Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed after the instance is created."
           components:
             issuer:
               uiType: group
@@ -714,19 +719,22 @@ ui:
               components:
                 issuerName:
                   uiType: text
-                  path: spec.components.engine.parameters.tls.issuer.name
+                  path: spec.parameters.tls.issuer.name
                   fieldParams:
                     label: "cert-manager issuer"
-                    helperText: "Issuer that signs the certificate for the instance's Services. It must write its CA certificate (ca.crt), as CA and Vault issuers do. Needs cert-manager."
+                    helperText: "Issuer that signs the server certificate for the instance's Services. It must write its CA certificate (ca.crt), as CA and Vault issuers do. Needs cert-manager."
+                    modes:
+                      edit:
+                        disabled: true
                   validation:
                     celExpressions:
-                      - celExpr: "!has(spec.components.engine.parameters.tls.issuer.name) || spec.components.engine.parameters.tls.issuer.name == '' || !has(spec.components.engine.parameters.tls.certificateSecretName) || spec.components.engine.parameters.tls.certificateSecretName == ''"
+                      - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '' || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == ''"
                         message: "Use either an issuer or a certificate secret, not both"
-                      - celExpr: "!has(spec.components.engine.parameters.tls.issuer.kind) || spec.components.engine.parameters.tls.issuer.kind == '' || (has(spec.components.engine.parameters.tls.issuer.name) && spec.components.engine.parameters.tls.issuer.name != '')"
+                      - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.kind) || spec.parameters.tls.issuer.kind == '' || (has(spec.parameters.tls.issuer.name) && spec.parameters.tls.issuer.name != '')"
                         message: "Name the issuer"
                 issuerKind:
                   uiType: select
-                  path: spec.components.engine.parameters.tls.issuer.kind
+                  path: spec.parameters.tls.issuer.kind
                   fieldParams:
                     label: "Issuer kind"
                     helperText: "Issuer when not set"
@@ -735,24 +743,47 @@ ui:
                         value: "Issuer"
                       - label: "ClusterIssuer"
                         value: "ClusterIssuer"
+                    modes:
+                      edit:
+                        disabled: true
               componentsOrder:
                 - issuerName
                 - issuerKind
             certificateSecretName:
               uiType: text
-              path: spec.components.engine.parameters.tls.certificateSecretName
+              path: spec.parameters.tls.certificateSecretName
               fieldParams:
                 label: "Certificate secret"
-                helperText: "Secret with the certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). The certificate must be valid for the names clients connect to, such as <name>-rw.<namespace>.svc."
+                helperText: "Secret with the server certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). The certificate must be valid for the names clients connect to, such as <name>-rw.<namespace>.svc."
+                modes:
+                  edit:
+                    disabled: true
               validation:
                 regex:
                   pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
                   message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
+            internalCertificateSecretName:
+              uiType: text
+              path: spec.parameters.tls.internalCertificateSecretName
+              fieldParams:
+                label: "Replication certificate secret"
+                helperText: "Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key), and the CA certificate that signs it (ca.crt). Can't be combined with the PgBouncer proxy."
+                modes:
+                  edit:
+                    disabled: true
+              validation:
+                regex:
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                  message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
+                celExpressions:
+                  - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '' || !has(spec.components.proxy)"
+                    message: "Can't be combined with the PgBouncer proxy"
           componentsOrder:
             - issuer
             - certificateSecretName
+            - internalCertificateSecretName
       componentsOrder:
-        - requireTLS
+        - mode
         - certificates
     advanced:
       label: "Advanced configuration"

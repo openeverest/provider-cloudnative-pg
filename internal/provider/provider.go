@@ -92,6 +92,10 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if err := cnpg.DefaultPgStatStatements(c, &custom); err != nil {
 		return err
 	}
+	tls, err := cnpg.TLS(c.Instance())
+	if err != nil {
+		return err
+	}
 
 	pg := &cnpgv1.Cluster{
 		ObjectMeta: c.ObjectMeta(c.Name()),
@@ -104,7 +108,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if err := cnpg.ApplyPgHBA(pg, &custom); err != nil {
 		return err
 	}
-	cnpg.ApplyRequireTLS(pg, &custom)
+	cnpg.ApplyTLS(pg, tls, c.Name())
 	cnpg.ApplyReplicationSlots(pg, &custom, engine.Version, c.Instance().Spec.Version)
 
 	if custom.Managed != nil {
@@ -134,11 +138,6 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if pg.Spec.ImagePullPolicy == "" {
 		pg.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	}
-
-	if custom.Certificates != nil {
-		pg.Spec.Certificates = custom.Certificates
-	}
-	cnpg.ApplyTLS(pg, custom.TLS, c.Name())
 
 	if custom.Monitoring != nil {
 		pg.Spec.Monitoring = custom.Monitoring
@@ -184,19 +183,11 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
-	if err := syncServerCertificate(c, pg, custom.TLS); err != nil {
+	if err := syncCertificates(c, pg, tls); err != nil {
 		return err
 	}
 
 	if err := c.Apply(pg); err != nil {
-		return err
-	}
-
-	if err := deleteUnusedServerCertificate(c, custom.TLS); err != nil {
-		return err
-	}
-
-	if err := reissueStaleCertificates(c, pg); err != nil {
 		return err
 	}
 
@@ -209,7 +200,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
-	if err := syncPooler(c, custom.RequireTLS != nil && *custom.RequireTLS); err != nil {
+	if err := syncPooler(c, cnpg.RequireTLS(tls)); err != nil {
 		return err
 	}
 

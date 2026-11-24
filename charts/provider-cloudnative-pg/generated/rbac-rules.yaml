@@ -28,7 +28,6 @@
     - secrets
   verbs:
     - create
-    - delete
     - get
     - list
     - patch
@@ -121,7 +120,6 @@
     - certificates
   verbs:
     - create
-    - delete
     - get
     - patch
     - update

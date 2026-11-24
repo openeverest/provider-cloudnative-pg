@@ -11,6 +11,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
@@ -42,13 +43,15 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(field.NewPath("spec", "backup", "storages"), barman.ValidateSchedules(instance.Spec.Backup))...)
 	errs = append(errs, invalid(field.NewPath("spec", "dataSource"), barman.ValidateDataSource(instance.Spec.DataSource))...)
 	errs = append(errs, invalid(componentsPath.Key(common.ComponentProxy), validateProxy(instance))...)
+	_, proxy := instance.Spec.Components[common.ComponentProxy]
+	errs = append(errs, cnpg.ValidateTLS(instance, proxy)...)
+	errs = append(errs, cnpg.ValidateTLSTransition(instance, in.Old)...)
 
 	custom, err := engineCustomSpec(engine)
 	if err != nil {
 		return controller.ValidationResult{Errors: append(errs, field.Invalid(engineParams, field.OmitValueType{}, err.Error()))}
 	}
 	errs = append(errs, invalid(engineParams, cnpg.ValidateCustomSpec(&custom))...)
-	errs = append(errs, invalid(engineParams, cnpg.ValidateCertificateSecretNames(&custom, instance.Name))...)
 	errs = append(errs, invalid(engineParams.Child("postgresql", "synchronous"), cnpg.ValidateSynchronous(engine, &custom))...)
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
@@ -75,9 +78,10 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 // images in the ClusterImageCatalog, and the live Cluster and Database for
 // writes admission didn't see, including a change of the HA replication slot
 // prefix CloudNativePG would refuse, and the bootstrap VolumeSnapshot: authorized
-// for this Instance, and unchanged once the Cluster exists, and the certificate
-// Secrets CloudNativePG would otherwise get stuck on. At admission its errors
-// are warnings; before Sync they block it.
+// for this Instance, and unchanged once the Cluster exists, the certificate
+// Secrets CloudNativePG would otherwise get stuck on, and that the
+// certificates the Cluster uses don't change. At admission its errors are
+// warnings; before Sync they block it.
 func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	custom, err := engineCustomSpec(engine)
@@ -102,8 +106,6 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 		{extensionsPath, func() error { return cnpg.ValidateExtensionsAtCreation(c, &custom) }},
 		{slotPrefixPath, func() error { return cnpg.ValidateReplicationSlotsChange(c, &custom) }},
 		{volumeSnapshotPath, func() error { return cnpg.ValidateVolumeSnapshot(c, &custom) }},
-		{engineParams.Child("tls"), func() error { return validateTLSSecret(c, custom.TLS) }},
-		{engineParams.Child("certificates"), func() error { return validateCertificatesSecrets(c, &custom) }},
 	} {
 		err := check.run()
 		if err == nil {
@@ -114,6 +116,22 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 			return nil, err
 		}
 		errs = append(errs, field.Invalid(check.path, field.OmitValueType{}, err.Error()))
+	}
+
+	tls, err := cnpg.TLS(c.Instance())
+	if err != nil {
+		// Validate reports it.
+		return errs, nil
+	}
+	for _, check := range []func(*controller.Context, definition.TLSParameters) (field.ErrorList, error){
+		validateCertificateSecrets,
+		validateTLSChange,
+	} {
+		tlsErrs, err := check(c, tls)
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, tlsErrs...)
 	}
 	return errs, nil
 }

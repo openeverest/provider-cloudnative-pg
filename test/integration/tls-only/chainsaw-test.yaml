@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
-# requireTLS refuses unencrypted client connections and is applied by reload.
+# tls.mode requireTLS refuses unencrypted client connections, and switching
+# to preferTLS is applied by reload.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -52,7 +53,7 @@ spec:
               set -eu
               uid="$(kubectl get pod tls-only-1 -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
               kubectl patch instance/tls-only -n "$NAMESPACE" --type=merge \
-                -p '{"spec":{"components":{"engine":{"parameters":{"requireTLS":false}}}}}'
+                -p '{"spec":{"parameters":{"tls":{"mode":"preferTLS"}}}}'
               password="$(kubectl get secret tls-only-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
               for _ in $(seq 1 45); do
                 out="$(kubectl exec -n "$NAMESPACE" tls-only-1 -c postgres -- env PGPASSWORD="$password" \
@@ -60,7 +61,7 @@ spec:
                 [ "$out" = 1 ] && break
                 sleep 2
               done
-              echo "sslmode=disable after requireTLS=false: $out"
+              echo "sslmode=disable after preferTLS: $out"
               test "$out" = 1
               test "$(kubectl get pod tls-only-1 -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')" = "$uid"
       catch:

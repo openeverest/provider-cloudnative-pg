@@ -20,11 +20,6 @@ type CNPGCustomSpec struct {
 	// PriorityClassName sets the Kubernetes PriorityClass of the instance pods.
 	// The PriorityClass must exist; changing it rolls the instance pods.
 	PriorityClassName string `json:"priorityClassName,omitempty"`
-	// RequireTLS rejects client connections that do not use TLS by placing a
-	// "hostnossl all all all reject" rule before the user's pg_hba rules.
-	// Unset or false keeps CNPG's default, which also accepts unencrypted
-	// connections. Applied by CNPG with a configuration reload, no restart.
-	RequireTLS *bool `json:"requireTLS,omitempty"`
 
 	// PgHBA declares which clients may connect to which databases as which
 	// users: pg_hba.conf records, one per line, such as
@@ -66,10 +61,10 @@ type CNPGCustomSpec struct {
 	// (postgresql.conf), pg_hba and pg_ident records, synchronous
 	// replication, shared_preload_libraries, LDAP and more. CNPG manages a
 	// fixed set of parameters itself and rejects them here. The provider adds
-	// the records of requireTLS and pgHBA, the parameters and libraries of
-	// enabled extensions and replication slot settings. pg_hba cannot be
-	// combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
-	// for parameters that need it.
+	// the records of spec.parameters.tls.mode and pgHBA, the parameters and
+	// libraries of enabled extensions and replication slot settings. pg_hba
+	// cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
+	// instances for parameters that need it.
 	PostgresConfiguration *cnpgv1.PostgresConfiguration `json:"postgresql,omitempty"`
 
 	// Managed is CNPG's declarative management of PostgreSQL roles
@@ -82,19 +77,6 @@ type CNPGCustomSpec struct {
 	// creation, and ignored when the Instance restores a backup
 	// (spec.dataSource).
 	Bootstrap *BootstrapConfiguration `json:"bootstrap,omitempty"`
-
-	// TLS sets the server certificate PostgreSQL and PgBouncer present to
-	// clients: one a cert-manager issuer signs, or one in a Secret. Without
-	// it CNPG issues the certificate from a CA it creates for the instance.
-	// Its issuer and certificateSecretName cannot be combined with the server
-	// fields of certificates.
-	TLS *TLSSpec `json:"tls,omitempty"`
-
-	// Certificates are the TLS certificates of the instance (CNPG
-	// certificates). Without them CNPG issues and rotates its own.
-	// serverTLSSecret needs serverCASecret and cannot be combined with
-	// serverAltDNSNames; replicationTLSSecret needs clientCASecret.
-	Certificates *cnpgv1.CertificatesConfiguration `json:"certificates,omitempty"`
 
 	// Monitoring configures CNPG's metrics exporter on port 9187 of every
 	// instance pod: custom queries, the default queries, TLS and relabeling.
@@ -196,49 +178,6 @@ type ExtensionsSpec struct {
 	// Requires PostgreSQL 18.7+. Can only be enabled at creation; cannot be
 	// turned off.
 	PgPartman *ExtensionToggle `json:"pgpartman,omitempty"`
-}
-
-// TLSSpec chooses where the server certificate comes from. Set issuer or
-// certificateSecretName, not both. Either can be set, changed or removed on a
-// running instance; PostgreSQL reloads the certificate without a restart.
-type TLSSpec struct {
-	// Issuer is the cert-manager Issuer or ClusterIssuer that signs the
-	// server certificate. The provider requests it as the Certificate
-	// <instance>-tls, for every name of the instance's Services and those of
-	// extraDNSNames, and cert-manager renews it. The issuer must write its CA
-	// certificate to the Secret's ca.crt, as the CA and Vault issuers do;
-	// clients verify the server with it. Needs cert-manager.
-	Issuer *IssuerReference `json:"issuer,omitempty"`
-
-	// CertificateSecretName is a Secret in the instance's namespace holding
-	// the server certificate, followed by any intermediate CA certificates
-	// (tls.crt), its private key (tls.key) and the CA certificate clients
-	// verify the server with (ca.crt). The certificate must be valid for the
-	// names clients connect to, such as <instance>-rw.<namespace>.svc. The
-	// provider labels the Secret cnpg.io/reload, so PostgreSQL loads a
-	// renewed certificate without a restart.
-	CertificateSecretName string `json:"certificateSecretName,omitempty"`
-
-	// ExtraDNSNames are names the server certificate is valid for besides
-	// those of the instance's Services, such as an external DNS name. Used
-	// with issuer, or without issuer and certificateSecretName for the
-	// certificate CNPG issues. Cannot be combined with certificateSecretName,
-	// whose certificate carries its own names.
-	ExtraDNSNames []string `json:"extraDNSNames,omitempty"`
-}
-
-// IssuerReference names a cert-manager issuer.
-type IssuerReference struct {
-	// Name of the issuer. An Issuer must be in the instance's namespace.
-	Name string `json:"name"`
-
-	// Kind of the issuer: Issuer (the default) or ClusterIssuer, or the kind
-	// of an external issuer of group.
-	Kind string `json:"kind,omitempty"`
-
-	// Group is the API group of an external issuer, such as
-	// awspca.cert-manager.io. Defaults to cert-manager.io.
-	Group string `json:"group,omitempty"`
 }
 
 // ExtensionToggle switches a first-class extension on.

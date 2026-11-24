@@ -1,15 +1,21 @@
 package cnpg
 
 import (
-	"cmp"
+	"encoding/json"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+
+	"github.com/openeverest/provider-cloudnative-pg/definition"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // RejectNonTLSRule refuses every TCP connection that is not encrypted. CNPG
@@ -18,17 +24,45 @@ import (
 // default "host all all all" rule, which this rule therefore shadows.
 const RejectNonTLSRule = "hostnossl all all all reject"
 
-// ApplyRequireTLS places RejectNonTLSRule ahead of the user's pg_hba rules
-// when TLS is required, so no user rule can admit an unencrypted client.
-func ApplyRequireTLS(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec) {
-	if custom.RequireTLS == nil || !*custom.RequireTLS {
-		return
+// CertManagerGroup is the API group of cert-manager's own issuers.
+const CertManagerGroup = "cert-manager.io"
+
+// TLSPath is the field path of the TLS parameters.
+var TLSPath = field.NewPath("spec", "parameters", "tls")
+
+// TLS decodes the TLS parameters of in, with the defaults applied: preferTLS,
+// and an Issuer of cert-manager.io.
+func TLS(in *corev1alpha1.Instance) (definition.TLSParameters, error) {
+	var params definition.Parameters
+	if raw := in.Spec.Parameters; raw != nil && len(raw.Raw) > 0 {
+		if err := json.Unmarshal(raw.Raw, &params); err != nil {
+			return definition.TLSParameters{}, fmt.Errorf("decode spec.parameters: %w", err)
+		}
 	}
-	pg.Spec.PostgresConfiguration.PgHBA = append([]string{RejectNonTLSRule}, pg.Spec.PostgresConfiguration.PgHBA...)
+	var tls definition.TLSParameters
+	if params.TLS != nil {
+		tls = *params.TLS
+	}
+	if tls.Mode == "" {
+		tls.Mode = definition.TLSModePrefer
+	}
+	if tls.Issuer != nil {
+		issuer := *tls.Issuer
+		if issuer.Kind == "" {
+			issuer.Kind = definition.IssuerKindIssuer
+		}
+		if issuer.Group == "" {
+			issuer.Group = CertManagerGroup
+		}
+		tls.Issuer = &issuer
+	}
+	return tls, nil
 }
 
-// certManagerGroup is the API group of cert-manager's own issuers.
-const certManagerGroup = "cert-manager.io"
+// RequireTLS says whether clients must use TLS.
+func RequireTLS(tls definition.TLSParameters) bool {
+	return tls.Mode == definition.TLSModeRequire
+}
 
 // ServerCertificateName names the cert-manager Certificate the provider
 // requests for tls.issuer, and the Secret cert-manager writes it to. CNPG's
@@ -39,91 +73,169 @@ func ServerCertificateName(instance string) string {
 
 // ServerCertificateSecret is the Secret holding the server certificate tls
 // sets, or "" when CNPG issues it.
-func ServerCertificateSecret(tls *components.TLSSpec, instance string) string {
+func ServerCertificateSecret(tls definition.TLSParameters, instance string) string {
 	switch {
-	case tls == nil:
-		return ""
+	case tls.CertificateSecretName != "":
+		return tls.CertificateSecretName
 	case tls.Issuer != nil:
 		return ServerCertificateName(instance)
-	default:
-		return tls.CertificateSecretName
 	}
+	return ""
 }
 
-// ApplyTLS points CNPG at the server certificate tls sets. The Secret is both
-// the server certificate and the CA CNPG checks it against, since it carries
-// ca.crt. Without a Secret, extraDNSNames go to the certificate CNPG issues.
-func ApplyTLS(pg *cnpgv1.Cluster, tls *components.TLSSpec, instance string) {
-	if tls == nil {
-		return
+// ApplyTLS configures the Cluster for tls. requireTLS places RejectNonTLSRule
+// ahead of the user's pg_hba rules, so no user rule can admit an unencrypted
+// client. A server certificate Secret is both the certificate and the CA CNPG
+// checks it against, since it carries ca.crt; likewise the replication
+// certificate is checked against its own ca.crt. Without a server Secret,
+// additionalNames go to the certificate CNPG issues.
+func ApplyTLS(pg *cnpgv1.Cluster, tls definition.TLSParameters, instance string) {
+	if RequireTLS(tls) {
+		pg.Spec.PostgresConfiguration.PgHBA = append([]string{RejectNonTLSRule}, pg.Spec.PostgresConfiguration.PgHBA...)
 	}
-	certificates := &cnpgv1.CertificatesConfiguration{}
-	if pg.Spec.Certificates != nil {
-		certificates = pg.Spec.Certificates.DeepCopy()
-	}
+
+	certificates := cnpgv1.CertificatesConfiguration{}
 	if secret := ServerCertificateSecret(tls, instance); secret != "" {
 		certificates.ServerTLSSecret = secret
 		certificates.ServerCASecret = secret
-	} else if len(tls.ExtraDNSNames) > 0 {
-		certificates.ServerAltDNSNames = slices.Clone(tls.ExtraDNSNames)
-	} else {
-		return
+	} else if len(tls.AdditionalNames) > 0 {
+		certificates.ServerAltDNSNames = slices.Clone(tls.AdditionalNames)
 	}
-	pg.Spec.Certificates = certificates
+	if secret := tls.InternalCertificateSecretName; secret != "" {
+		certificates.ReplicationTLSSecret = secret
+		certificates.ClientCASecret = secret
+	}
+	if !equality.Semantic.DeepEqual(certificates, cnpgv1.CertificatesConfiguration{}) {
+		pg.Spec.Certificates = &certificates
+	}
 }
 
-// IssuerKind is the kind of the issuer, Issuer when unset.
-func IssuerKind(issuer *components.IssuerReference) string {
-	return cmp.Or(issuer.Kind, "Issuer")
-}
+var (
+	tlsModes    = []definition.TLSMode{definition.TLSModePrefer, definition.TLSModeRequire}
+	issuerKinds = []definition.IssuerKind{definition.IssuerKindIssuer, definition.IssuerKindClusterIssuer}
+)
 
-// IssuerGroup is the API group of the issuer, cert-manager.io when unset.
-func IssuerGroup(issuer *components.IssuerReference) string {
-	return cmp.Or(issuer.Group, certManagerGroup)
-}
+// ValidateTLS checks the TLS parameters of in on their own. proxy says
+// whether the Instance has the proxy component.
+func ValidateTLS(in *corev1alpha1.Instance, proxy bool) field.ErrorList {
+	tls, err := TLS(in)
+	if err != nil {
+		return field.ErrorList{field.Invalid(field.NewPath("spec", "parameters"), field.OmitValueType{}, err.Error())}
+	}
 
-// ValidateTLS checks tls alone and against the server fields of certificates,
-// which name the same certificate.
-func ValidateTLS(tls *components.TLSSpec, certificates *cnpgv1.CertificatesConfiguration) error {
-	if tls == nil {
-		return nil
+	var errs field.ErrorList
+	switch {
+	case tls.Mode == "disabled":
+		errs = append(errs, field.Invalid(TLSPath.Child("mode"), tls.Mode,
+			"CloudNativePG always serves TLS and replicates over it, so TLS cannot be turned off; use preferTLS or requireTLS"))
+	case !slices.Contains(tlsModes, tls.Mode):
+		errs = append(errs, field.NotSupported(TLSPath.Child("mode"), tls.Mode, tlsModes))
 	}
-	if tls.Issuer != nil && tls.CertificateSecretName != "" {
-		return fmt.Errorf("tls: set issuer or certificateSecretName, not both")
+
+	for _, ref := range []struct{ name, value string }{
+		{"certificateSecretName", tls.CertificateSecretName},
+		{"internalCertificateSecretName", tls.InternalCertificateSecretName},
+	} {
+		if ref.value == "" {
+			continue
+		}
+		if msgs := validation.IsDNS1123Subdomain(ref.value); len(msgs) > 0 {
+			errs = append(errs, field.Invalid(TLSPath.Child(ref.name), ref.value, strings.Join(msgs, "; ")))
+		}
+		for _, suffix := range cnpgCertificateSecretSuffixes {
+			if ref.value == in.Name+suffix {
+				errs = append(errs, field.Invalid(TLSPath.Child(ref.name), ref.value,
+					"the name of a Secret CloudNativePG writes its own certificate to, and it would overwrite yours; name the Secret differently"))
+			}
+		}
 	}
+
 	if issuer := tls.Issuer; issuer != nil {
+		path := TLSPath.Child("issuer")
+		if tls.CertificateSecretName != "" {
+			errs = append(errs, field.Forbidden(path, "use either certificateSecretName or an issuer, not both"))
+		}
 		if issuer.Name == "" {
-			return fmt.Errorf("tls.issuer.name is required")
+			errs = append(errs, field.Required(path.Child("name"), ""))
+		} else if msgs := validation.IsDNS1123Subdomain(issuer.Name); len(msgs) > 0 {
+			errs = append(errs, field.Invalid(path.Child("name"), issuer.Name, strings.Join(msgs, "; ")))
 		}
-		if errs := validation.IsDNS1123Subdomain(issuer.Name); len(errs) > 0 {
-			return fmt.Errorf("tls.issuer.name %q is invalid: %s", issuer.Name, strings.Join(errs, "; "))
-		}
-		if kind := IssuerKind(issuer); IssuerGroup(issuer) == certManagerGroup && kind != "Issuer" && kind != "ClusterIssuer" {
-			return fmt.Errorf("tls.issuer.kind %q is not a cert-manager issuer: use Issuer or ClusterIssuer, or set group for an external issuer", kind)
-		}
-	}
-	if name := tls.CertificateSecretName; name != "" {
-		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
-			return fmt.Errorf("tls.certificateSecretName %q is invalid: %s", name, strings.Join(errs, "; "))
-		}
-		if len(tls.ExtraDNSNames) > 0 {
-			return fmt.Errorf("tls.extraDNSNames cannot be combined with tls.certificateSecretName: the certificate in the Secret carries its own names")
+		if issuer.Group == CertManagerGroup && !slices.Contains(issuerKinds, issuer.Kind) {
+			errs = append(errs, field.NotSupported(path.Child("kind"), issuer.Kind, issuerKinds))
 		}
 	}
-	for _, name := range tls.ExtraDNSNames {
-		if errs := validation.IsDNS1123Subdomain(strings.TrimPrefix(name, "*.")); len(errs) > 0 {
-			return fmt.Errorf("tls.extraDNSNames: %q is not a DNS name: %s", name, strings.Join(errs, "; "))
+
+	if tls.InternalCertificateSecretName != "" && proxy {
+		errs = append(errs, field.Forbidden(TLSPath.Child("internalCertificateSecretName"),
+			"cannot be combined with the proxy component: CloudNativePG issues the client certificate PgBouncer authenticates to PostgreSQL with "+
+				"from the private key of the CA that signs the replication certificate, and the Secret carries no CA key"))
+	}
+
+	if len(tls.AdditionalNames) > 0 && tls.CertificateSecretName != "" {
+		errs = append(errs, field.Forbidden(TLSPath.Child("additionalNames"),
+			"cannot be combined with certificateSecretName: the certificate in the Secret carries its own names"))
+	}
+	for i, name := range tls.AdditionalNames {
+		if net.ParseIP(name) != nil {
+			errs = append(errs, field.Invalid(TLSPath.Child("additionalNames").Index(i), name, "must be a DNS name, not an IP address"))
+			continue
+		}
+		if msgs := validation.IsDNS1123Subdomain(strings.TrimPrefix(name, "*.")); len(msgs) > 0 {
+			errs = append(errs, field.Invalid(TLSPath.Child("additionalNames").Index(i), name, "must be a DNS name: "+strings.Join(msgs, "; ")))
 		}
 	}
-	if certificates == nil {
+	return errs
+}
+
+// ValidateTLSTransition rejects, on an update of an Instance the provider has
+// reconciled before, a change of where its certificates come from: they can
+// only be set at creation. The certificate fields an Instance of an earlier
+// release set in components.engine.parameters.certificates count as the
+// same source, so moving them to spec.parameters.tls is not a change.
+func ValidateTLSTransition(in, old *corev1alpha1.Instance) field.ErrorList {
+	if old == nil || old.Status.Version == "" {
 		return nil
 	}
-	if (tls.Issuer != nil || tls.CertificateSecretName != "") &&
-		(certificates.ServerTLSSecret != "" || certificates.ServerCASecret != "" || len(certificates.ServerAltDNSNames) > 0) {
-		return fmt.Errorf("tls.issuer and tls.certificateSecretName cannot be combined with certificates.serverTLSSecret, serverCASecret or serverAltDNSNames: they set the same certificate")
+	before, err := TLS(old)
+	if err != nil {
+		return nil
 	}
-	if len(tls.ExtraDNSNames) > 0 && (certificates.ServerTLSSecret != "" || len(certificates.ServerAltDNSNames) > 0) {
-		return fmt.Errorf("tls.extraDNSNames cannot be combined with certificates.serverTLSSecret or serverAltDNSNames; use one of them")
+	after, err := TLS(in)
+	if err != nil {
+		return nil
+	}
+	if legacy := legacyCertificates(old); legacy != nil && before.CertificateSecretName == "" && before.InternalCertificateSecretName == "" && before.Issuer == nil {
+		before.CertificateSecretName = legacy.ServerTLSSecret
+		before.InternalCertificateSecretName = legacy.ReplicationTLSSecret
+	}
+	if CertificateSource(before) != CertificateSource(after) {
+		return field.ErrorList{field.Forbidden(TLSPath,
+			"certificateSecretName, internalCertificateSecretName and issuer can only be set when the instance is created")}
 	}
 	return nil
+}
+
+// CertificateSource identifies where an instance's certificates come from.
+func CertificateSource(tls definition.TLSParameters) string {
+	issuer := "/"
+	if tls.Issuer != nil {
+		issuer = tls.Issuer.Group + "/" + string(tls.Issuer.Kind) + "/" + tls.Issuer.Name
+	}
+	return issuer + " " + tls.CertificateSecretName + " " + tls.InternalCertificateSecretName
+}
+
+// legacyCertificates are the CNPG certificates an Instance of an earlier
+// release set in its engine parameters, or nil.
+func legacyCertificates(in *corev1alpha1.Instance) *cnpgv1.CertificatesConfiguration {
+	engine, ok := in.Spec.Components[common.ComponentEngine]
+	if !ok || engine.Parameters == nil {
+		return nil
+	}
+	var legacy struct {
+		Certificates *cnpgv1.CertificatesConfiguration `json:"certificates"`
+	}
+	if json.Unmarshal(engine.Parameters.Raw, &legacy) != nil {
+		return nil
+	}
+	return legacy.Certificates
 }

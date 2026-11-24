@@ -13,11 +13,8 @@ import (
 	"testing"
 	"time"
 
-	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 )
 
 type testCert struct {
@@ -27,15 +24,6 @@ type testCert struct {
 
 func (tc testCert) pem() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tc.cert.Raw})
-}
-
-func (tc testCert) secKey(t *testing.T) []byte {
-	t.Helper()
-	der, err := x509.MarshalECPrivateKey(tc.key.(*ecdsa.PrivateKey))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 }
 
 func (tc testCert) pkcs8Key(t *testing.T) []byte {
@@ -160,51 +148,36 @@ func TestValidateServerCertificate(t *testing.T) {
 	}
 }
 
-func TestValidateSigningCA(t *testing.T) {
+func TestValidateReplicationCertificate(t *testing.T) {
 	root := issue(t, caTemplate("Root CA"), nil, false)
-	intermediate := issue(t, caTemplate("Intermediate CA"), &root, false)
-	rsaRoot := issue(t, caTemplate("RSA Root CA"), nil, true)
+	other := issue(t, caTemplate("Other CA"), nil, false)
+	client := func(name string) *x509.Certificate {
+		return &x509.Certificate{
+			Subject: pkix.Name{CommonName: name}, KeyUsage: x509.KeyUsageDigitalSignature,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		}
+	}
+	replica := issue(t, client("streaming_replica"), &root, false)
+	app := issue(t, client("app"), &root, false)
+	serverOnly := issue(t, serverTemplate(x509.ExtKeyUsageServerAuth, "streaming_replica"), &root, false)
 
+	replication := func(c testCert, ca testCert) *corev1.Secret {
+		return secret("repl", map[string][]byte{"tls.crt": c.pem(), "tls.key": c.pkcs8Key(t), "ca.crt": ca.pem()})
+	}
 	tests := []struct {
 		name    string
-		data    map[string][]byte
+		secret  *corev1.Secret
 		wantErr string
 	}{
-		{name: "root", data: map[string][]byte{"ca.crt": root.pem(), "ca.key": root.secKey(t)}},
-		{name: "intermediate with its root", data: map[string][]byte{"ca.crt": join(intermediate.pem(), root.pem()), "ca.key": intermediate.secKey(t)}},
-		{name: "no key", data: map[string][]byte{"ca.crt": root.pem()}, wantErr: "has no ca.key"},
-		{name: "PKCS #8 key", data: map[string][]byte{"ca.crt": root.pem(), "ca.key": root.pkcs8Key(t)}, wantErr: "openssl ec -in ca.key -out ca-ec.key"},
-		{name: "RSA key", data: map[string][]byte{"ca.crt": rsaRoot.pem(), "ca.key": rsaRoot.pkcs8Key(t)}, wantErr: "is an RSA key"},
-		{name: "key of another CA", data: map[string][]byte{"ca.crt": root.pem(), "ca.key": intermediate.secKey(t)}, wantErr: "is not the private key of the first certificate"},
-		{name: "intermediate alone", data: map[string][]byte{"ca.crt": intermediate.pem(), "ca.key": intermediate.secKey(t)}, wantErr: "but not its root CA certificate"},
+		{name: "streaming_replica signed by ca.crt", secret: replication(replica, root)},
+		{name: "another user", secret: replication(app, root), wantErr: `issued to "app"`},
+		{name: "server certificate", secret: replication(serverOnly, root), wantErr: "not for client authentication"},
+		{name: "signed by another CA", secret: replication(replica, other), wantErr: "is not signed by a CA certificate in ca.crt"},
+		{name: "no ca.crt", secret: secret("repl", map[string][]byte{"tls.crt": replica.pem(), "tls.key": replica.pkcs8Key(t)}), wantErr: "no PEM certificate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertError(t, ValidateSigningCA(secret("ca", tt.data), "certificates.serverCASecret"), tt.wantErr)
-		})
-	}
-}
-
-func TestValidateCertificateSecretNames(t *testing.T) {
-	tests := []struct {
-		name    string
-		custom  components.CNPGCustomSpec
-		wantErr string
-	}{
-		{name: "none"},
-		{name: "own names", custom: components.CNPGCustomSpec{
-			TLS:          &components.TLSSpec{CertificateSecretName: "pg-tls"},
-			Certificates: &cnpgv1.CertificatesConfiguration{ClientCASecret: "pg-client-ca", ReplicationTLSSecret: "pg-repl"},
-		}},
-		{name: "server certificate named like CloudNativePG's", custom: components.CNPGCustomSpec{TLS: &components.TLSSpec{CertificateSecretName: "pg-server"}}, wantErr: `tls.certificateSecretName: "pg-server"`},
-		{
-			name: "replication certificate named like CloudNativePG's", wantErr: `certificates.replicationTLSSecret: "pg-replication"`,
-			custom: components.CNPGCustomSpec{Certificates: &cnpgv1.CertificatesConfiguration{ClientCASecret: "ca", ReplicationTLSSecret: "pg-replication"}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assertError(t, ValidateCertificateSecretNames(&tt.custom, "pg"), tt.wantErr)
+			assertError(t, ValidateReplicationCertificate(tt.secret), tt.wantErr)
 		})
 	}
 }

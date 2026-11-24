@@ -5,6 +5,9 @@ metadata:
 spec:
   providerRef:
     name: provider-cloudnative-pg
+  parameters:
+    tls:
+      mode: requireTLS
   version: "17.10"
   components:
     engine:
@@ -19,5 +22,3 @@ spec:
           memory: 512Mi
       storage:
         size: 1Gi
-      parameters:
-        requireTLS: true

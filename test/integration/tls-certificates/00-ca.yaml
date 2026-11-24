@@ -1,5 +1,6 @@
 # A CA issuer in the test namespace: a self-signed issuer signs the CA
-# certificate, and the CA issuer signs with it and writes ca.crt.
+# certificate, and the CA issuer signs with it and writes ca.crt. It stands
+# for the company CA.
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:

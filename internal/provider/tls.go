@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,41 +16,45 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-cloudnative-pg/definition/components"
+	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
-	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // caCertificateKey is the Secret key of the CA certificate, in the Secrets
 // cert-manager writes and in those CloudNativePG reads.
 const caCertificateKey = "ca.crt"
 
-// syncServerCertificate makes the server certificate tls sets available
-// before the Cluster refers to it. With an issuer it requests the
-// Certificate and waits for cert-manager to issue it; with a Secret it waits
-// for the Secret and labels it, so PostgreSQL reloads a renewed certificate.
-func syncServerCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *components.TLSSpec) error {
+// syncCertificates makes the certificates tls sets available before the
+// Cluster refers to them. With an issuer it requests the server Certificate
+// and waits for cert-manager to issue it; with Secrets it waits for them and
+// labels them, so PostgreSQL reloads a renewed certificate.
+func syncCertificates(c *controller.Context, pg *cnpgv1.Cluster, tls definition.TLSParameters) error {
 	switch {
-	case tls == nil:
-		return nil
-	case tls.Issuer != nil:
-		return syncIssuedCertificate(c, pg, tls)
 	case tls.CertificateSecretName != "":
-		return labelCertificateSecret(c, tls.CertificateSecretName)
+		if err := labelCertificateSecret(c, tls.CertificateSecretName, "certificateSecretName"); err != nil {
+			return err
+		}
+	case tls.Issuer != nil:
+		if err := syncIssuedCertificate(c, pg, tls); err != nil {
+			return err
+		}
+	}
+	if tls.InternalCertificateSecretName != "" {
+		return labelCertificateSecret(c, tls.InternalCertificateSecretName, "internalCertificateSecretName")
 	}
 	return nil
 }
 
-func syncIssuedCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *components.TLSSpec) error {
+func syncIssuedCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls definition.TLSParameters) error {
 	name := cnpg.ServerCertificateName(c.Name())
 	if err := c.Apply(serverCertificate(c, pg, tls)); err != nil {
 		if meta.IsNoMatchError(err) {
-			return fmt.Errorf("tls.issuer needs cert-manager, and the cluster does not serve its Certificate kind: %w", err)
+			return fmt.Errorf("spec.parameters.tls.issuer needs cert-manager, and the cluster does not serve its Certificate kind: %w", err)
 		}
 		return fmt.Errorf("apply cert-manager Certificate %q: %w", name, err)
 	}
@@ -73,8 +78,8 @@ func syncIssuedCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *compo
 }
 
 // serverCertificate is the cert-manager Certificate for the names clients
-// reach the instance at: its Services, its poolers' and extraDNSNames.
-func serverCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *components.TLSSpec) *cmv1.Certificate {
+// reach the instance at: its Services, its poolers' and additionalNames.
+func serverCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls definition.TLSParameters) *cmv1.Certificate {
 	name := cnpg.ServerCertificateName(c.Name())
 	return &cmv1.Certificate{
 		ObjectMeta: c.ObjectMeta(name),
@@ -84,12 +89,12 @@ func serverCertificate(c *controller.Context, pg *cnpgv1.Cluster, tls *component
 			SecretTemplate: &cmv1.CertificateSecretTemplate{
 				Labels: map[string]string{utils.WatchedLabelName: "true"},
 			},
-			DNSNames: slices.Concat(serviceDNSNames(pg, c.Name()), tls.ExtraDNSNames),
+			DNSNames: slices.Concat(serviceDNSNames(pg, c.Name()), tls.AdditionalNames),
 			Usages:   []cmv1.KeyUsage{cmv1.UsageDigitalSignature, cmv1.UsageKeyEncipherment, cmv1.UsageServerAuth},
 			IssuerRef: cmmeta.IssuerReference{
 				Name:  tls.Issuer.Name,
-				Kind:  cnpg.IssuerKind(tls.Issuer),
-				Group: cnpg.IssuerGroup(tls.Issuer),
+				Kind:  string(tls.Issuer.Kind),
+				Group: tls.Issuer.Group,
 			},
 		},
 	}
@@ -168,12 +173,13 @@ func ownCertificateSecret(c *controller.Context, secret *corev1.Secret, certific
 	return nil
 }
 
-// labelCertificateSecret waits for the Secret of tls.certificateSecretName
-// and labels it, so CloudNativePG reloads the certificate when it changes.
-func labelCertificateSecret(c *controller.Context, name string) error {
+// labelCertificateSecret waits for the certificate Secret the TLS parameter
+// field names and labels it, so CloudNativePG reloads the certificate when
+// it changes.
+func labelCertificateSecret(c *controller.Context, name, field string) error {
 	secret := &corev1.Secret{}
 	if err := c.Get(secret, name); apierrors.IsNotFound(err) {
-		return controller.WaitFor(fmt.Sprintf("Waiting for the Secret %s with the server certificate (tls.certificateSecretName)", name))
+		return controller.WaitFor(fmt.Sprintf("Waiting for the Secret %s of spec.parameters.tls.%s", name, field))
 	} else if err != nil {
 		return fmt.Errorf("get Secret %q: %w", name, err)
 	}
@@ -191,96 +197,114 @@ func labelCertificateSecret(c *controller.Context, name string) error {
 	return nil
 }
 
-// deleteUnusedServerCertificate deletes the Certificate requested for an
-// issuer the Instance no longer sets, with the Secret it owns, once the
-// Cluster has stopped using it.
-func deleteUnusedServerCertificate(c *controller.Context, tls *components.TLSSpec) error {
-	if tls != nil && tls.Issuer != nil {
-		return nil
+// validateCertificateSecrets checks the certificate Secrets tls sets, once
+// they exist: Sync waits for a missing one.
+func validateCertificateSecrets(c *controller.Context, tls definition.TLSParameters) (field.ErrorList, error) {
+	var errs field.ErrorList
+	for _, check := range []struct {
+		path     *field.Path
+		name     string
+		validate func(*corev1.Secret) error
+	}{
+		{serverCertificatePath(tls), cnpg.ServerCertificateSecret(tls, c.Name()), func(secret *corev1.Secret) error {
+			return cnpg.ValidateServerCertificate(secret, secret, readWriteHosts(c))
+		}},
+		{cnpg.TLSPath.Child("internalCertificateSecretName"), tls.InternalCertificateSecretName, cnpg.ValidateReplicationCertificate},
+	} {
+		if check.name == "" {
+			continue
+		}
+		secret, err := optionalSecret(c, check.name)
+		if err != nil {
+			return nil, err
+		}
+		if secret == nil {
+			continue
+		}
+		if err := check.validate(secret); err != nil {
+			errs = append(errs, field.Invalid(check.path, check.name, err.Error()))
+		}
 	}
-	name := cnpg.ServerCertificateName(c.Name())
-	certificate := &unstructured.Unstructured{}
-	certificate.SetGroupVersionKind(cmv1.SchemeGroupVersion.WithKind(cmv1.CertificateKind))
-	if err := c.Get(certificate, name); apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
-		return nil
+	return errs, nil
+}
+
+// serverCertificatePath is the field that sets the server certificate.
+func serverCertificatePath(tls definition.TLSParameters) *field.Path {
+	if tls.CertificateSecretName == "" {
+		return cnpg.TLSPath.Child("issuer")
+	}
+	return cnpg.TLSPath.Child("certificateSecretName")
+}
+
+// validateTLSChange is cnpg.ValidateTLSTransition against the running
+// Cluster and the server Certificate, for reconcile time, when the previous
+// Instance is unknown: the certificates the Cluster uses, and the issuer of
+// the Certificate, can't change.
+func validateTLSChange(c *controller.Context, tls definition.TLSParameters) (field.ErrorList, error) {
+	live := &cnpgv1.Cluster{}
+	if err := c.Get(live, c.Name()); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	current := cnpgv1.CertificatesConfiguration{}
+	if live.Spec.Certificates != nil {
+		current = *live.Spec.Certificates
+	}
+	desired := &cnpgv1.Cluster{}
+	cnpg.ApplyTLS(desired, tls, c.Name())
+	want := cnpgv1.CertificatesConfiguration{}
+	if desired.Spec.Certificates != nil {
+		want = *desired.Spec.Certificates
+	}
+
+	forbidden := func(detail string) field.ErrorList {
+		return field.ErrorList{field.Forbidden(cnpg.TLSPath,
+			"certificateSecretName, internalCertificateSecretName and issuer can only be set when the instance is created: "+detail)}
+	}
+	if current.ServerTLSSecret != want.ServerTLSSecret {
+		return forbidden(fmt.Sprintf("the instance presents the server certificate of %s", describeServerSecret(current.ServerTLSSecret, c.Name()))), nil
+	}
+	if current.ReplicationTLSSecret != want.ReplicationTLSSecret {
+		return forbidden(fmt.Sprintf("replicas authenticate with the certificate of %s", describeSecret(current.ReplicationTLSSecret))), nil
+	}
+	// CloudNativePG issues its certificates from a CA of an earlier release's
+	// certificates.serverCASecret or clientCASecret, which the instance can't move off.
+	if current.ServerTLSSecret == "" && current.ServerCASecret != want.ServerCASecret {
+		return forbidden("CloudNativePG issues the server certificate from the CA of the Secret " + current.ServerCASecret), nil
+	}
+	if current.ReplicationTLSSecret == "" && current.ClientCASecret != want.ClientCASecret {
+		return forbidden("CloudNativePG issues the replication certificate from the CA of the Secret " + current.ClientCASecret), nil
+	}
+	if tls.Issuer == nil {
+		return nil, nil
+	}
+	certificate, err := uncachedCertificate(c, cnpg.ServerCertificateName(c.Name()))
+	if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+		return nil, nil
 	} else if err != nil {
-		return fmt.Errorf("get cert-manager Certificate %q: %w", name, err)
+		return nil, err
 	}
-	if !metav1.IsControlledBy(certificate, c.Instance()) {
-		return nil
+	ref := certificate.Spec.IssuerRef
+	if ref.Name != tls.Issuer.Name || cmp.Or(ref.Kind, cmv1.IssuerKind) != string(tls.Issuer.Kind) || cmp.Or(ref.Group, cnpg.CertManagerGroup) != tls.Issuer.Group {
+		return forbidden(fmt.Sprintf("the server certificate is issued by the %s %s of %s", cmp.Or(ref.Kind, cmv1.IssuerKind), ref.Name, cmp.Or(ref.Group, cnpg.CertManagerGroup))), nil
 	}
-
-	pg := &cnpgv1.Cluster{}
-	if err := c.Get(pg, c.Name()); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	if pg.Status.Certificates.ServerTLSSecret == name {
-		// The Cluster's next status change starts another Sync.
-		return nil
-	}
-	return client.IgnoreNotFound(c.Delete(certificate))
+	return nil, nil
 }
 
-// validateTLSSecret checks the Secret of the server certificate tls sets,
-// once it exists: Sync waits for a missing one.
-func validateTLSSecret(c *controller.Context, tls *components.TLSSpec) error {
-	name := cnpg.ServerCertificateSecret(tls, c.Name())
+func describeServerSecret(name, instance string) string {
+	switch name {
+	case "":
+		return "the CA CloudNativePG created for it"
+	case cnpg.ServerCertificateName(instance):
+		return "its cert-manager issuer"
+	}
+	return "the Secret " + name
+}
+
+func describeSecret(name string) string {
 	if name == "" {
-		return nil
+		return "the CA CloudNativePG created for the instance"
 	}
-	secret, err := optionalSecret(c, name)
-	if secret == nil {
-		return err
-	}
-	return cnpg.ValidateServerCertificate(secret, secret, readWriteHosts(c))
-}
-
-// validateCertificatesSecrets checks the Secrets of the certificates
-// passthrough that exist; CloudNativePG reports a missing one.
-func validateCertificatesSecrets(c *controller.Context, custom *components.CNPGCustomSpec) error {
-	certificates := custom.Certificates
-	if certificates == nil {
-		return nil
-	}
-	switch {
-	case certificates.ServerTLSSecret != "" && certificates.ServerCASecret != "":
-		server, err := optionalSecret(c, certificates.ServerTLSSecret)
-		if server == nil {
-			return err
-		}
-		ca, err := optionalSecret(c, certificates.ServerCASecret)
-		if ca == nil {
-			return err
-		}
-		if err := cnpg.ValidateServerCertificate(server, ca, readWriteHosts(c)); err != nil {
-			return fmt.Errorf("serverTLSSecret: %w", err)
-		}
-	case certificates.ServerCASecret != "":
-		if err := validateSigningCA(c, certificates.ServerCASecret, "serverCASecret"); err != nil {
-			return err
-		}
-	}
-
-	// CloudNativePG issues the replication certificate with the client CA,
-	// unless it is given one, and always the client certificate of PgBouncer.
-	_, proxy := c.Instance().Spec.Components[common.ComponentProxy]
-	if certificates.ClientCASecret == "" || (certificates.ReplicationTLSSecret != "" && !proxy) {
-		return nil
-	}
-	err := validateSigningCA(c, certificates.ClientCASecret, "clientCASecret")
-	if err != nil && certificates.ReplicationTLSSecret != "" {
-		return fmt.Errorf("%w; CloudNativePG issues the client certificate of the proxy component's PgBouncer with it, "+
-			"so leave clientCASecret and replicationTLSSecret unset to have it manage the replication certificates", err)
-	}
-	return err
-}
-
-func validateSigningCA(c *controller.Context, name, field string) error {
-	secret, err := optionalSecret(c, name)
-	if secret == nil {
-		return err
-	}
-	return cnpg.ValidateSigningCA(secret, field)
+	return "the Secret " + name
 }
 
 // optionalSecret reads a Secret, nil when it does not exist.
@@ -302,9 +326,9 @@ func readWriteHosts(c *controller.Context) []string {
 
 // issuerProblem says why the issuer cannot issue the Certificate, or "" when
 // it is ready or its readiness cannot be told.
-func issuerProblem(c *controller.Context, issuer *components.IssuerReference) string {
-	kind := cnpg.IssuerKind(issuer)
-	if cnpg.IssuerGroup(issuer) != cmv1.SchemeGroupVersion.Group || (kind != cmv1.IssuerKind && kind != cmv1.ClusterIssuerKind) {
+func issuerProblem(c *controller.Context, issuer *definition.IssuerReference) string {
+	kind := string(issuer.Kind)
+	if issuer.Group != cmv1.SchemeGroupVersion.Group || (kind != cmv1.IssuerKind && kind != cmv1.ClusterIssuerKind) {
 		return ""
 	}
 	obj := &unstructured.Unstructured{}
@@ -325,52 +349,4 @@ func issuerProblem(c *controller.Context, issuer *components.IssuerReference) st
 		}
 	}
 	return ""
-}
-
-// reissueStaleCertificates deletes the server and replication certificates
-// CloudNativePG issued when they are no longer signed by the CA it now issues
-// them with, so it issues them again. CloudNativePG renews its certificates
-// only when they expire: after a change of certificates.serverCASecret or
-// clientCASecret it would keep presenting the old server certificate, which
-// clients and replicas no longer trust, and replicas would keep presenting a
-// replication certificate the primary no longer accepts. It waits until
-// CloudNativePG has seen the new CA, so it does not issue from the old one.
-func reissueStaleCertificates(c *controller.Context, desired *cnpgv1.Cluster) error {
-	pg := &cnpgv1.Cluster{}
-	if err := c.Get(pg, c.Name()); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	certificates := desired.Spec.Certificates
-	if certificates == nil {
-		certificates = &cnpgv1.CertificatesConfiguration{}
-	}
-	observed := pg.Status.Certificates
-	for _, issued := range []struct {
-		supplied, secret, ca, observedCA string
-	}{
-		{certificates.ServerTLSSecret, desired.GetServerTLSSecretName(), desired.GetServerCASecretName(), observed.ServerCASecret},
-		{certificates.ReplicationTLSSecret, desired.GetReplicationSecretName(), desired.GetClientCASecretName(), observed.ClientCASecret},
-	} {
-		if issued.supplied != "" || issued.observedCA != issued.ca {
-			continue
-		}
-		if err := deleteIfNotSignedBy(c, pg, issued.secret, issued.ca); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func deleteIfNotSignedBy(c *controller.Context, pg *cnpgv1.Cluster, secretName, caName string) error {
-	secret, err := optionalSecret(c, secretName)
-	if secret == nil || !metav1.IsControlledBy(secret, pg) {
-		return err
-	}
-	ca, err := optionalSecret(c, caName)
-	if ca == nil || cnpg.SignedBy(secret, ca) {
-		return err
-	}
-	log.FromContext(c.Context()).Info("Deleting a certificate CloudNativePG issued with another CA, to have it issued again",
-		"secret", secretName, "ca", caName)
-	return client.IgnoreNotFound(c.Delete(secret))
 }
