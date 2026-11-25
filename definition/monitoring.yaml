@@ -13,3 +13,7 @@
 componentTypes:
   postgresql:
     metrics: Native
+    # While a bound class requires connections, the provider creates the
+    # openeverest_monitor role (pg_monitor) as a CloudNativePG managed role
+    # and publishes its Secret and one endpoint per PostgreSQL pod.
+    connection: Supported
