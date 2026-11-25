@@ -17,11 +17,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
+	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	monitoringv1alpha1 "github.com/openeverest/openeverest/v2/api/monitoring/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
@@ -122,7 +124,8 @@ func TestSyncMonitorRoleCreatesTheRoleWhileAClassRequiresConnections(t *testing.
 	assert.Equal(t, monitorRoleName, role.Name)
 	assert.Equal(t, cnpgv1.EnsurePresent, role.Ensure)
 	assert.True(t, role.Login)
-	assert.Equal(t, []string{pgMonitorRole}, role.InRoles)
+	assert.Equal(t, []string{"pg_monitor", "pg_read_all_data"}, role.InRoles)
+	assert.Equal(t, int64(monitorConnectionLimit), role.ConnectionLimit)
 	assert.Equal(t, "pg-monitoring-monitor", role.PasswordSecret.Name)
 }
 
@@ -162,6 +165,25 @@ func TestSyncMonitorRoleWithoutAnyMonitoringLeavesTheClusterAlone(t *testing.T) 
 	assert.Nil(t, pg.Spec.Managed)
 }
 
+func TestSyncMonitorRoleDropsTheRoleARestoreInherits(t *testing.T) {
+	c, _ := connectionContext(t, false, "")
+	c.Instance().Spec.DataSource = &backupv1alpha1.DataSource{}
+	pg := &cnpgv1.Cluster{}
+
+	require.NoError(t, syncMonitorRole(c, pg))
+
+	assert.Equal(t, cnpgv1.EnsureAbsent, managedRole(pg, monitorRoleName).Ensure,
+		"the source's role and password must not stay usable")
+}
+
+func TestValidateReservedRoles(t *testing.T) {
+	ok := &components.CNPGCustomSpec{Managed: &cnpgv1.ManagedConfiguration{Roles: []cnpgv1.RoleConfiguration{{Name: "app_reader"}}}}
+	require.NoError(t, validateReservedRoles(ok))
+	require.NoError(t, validateReservedRoles(&components.CNPGCustomSpec{}))
+	reserved := &components.CNPGCustomSpec{Managed: &cnpgv1.ManagedConfiguration{Roles: []cnpgv1.RoleConfiguration{{Name: monitorRoleName}}}}
+	assert.ErrorContains(t, validateReservedRoles(reserved), "reserved")
+}
+
 func TestMonitorConnectionSources(t *testing.T) {
 	t.Run("published once the role is reconciled", func(t *testing.T) {
 		c, _ := connectionContext(t, true, `{"tls":{"mode":"requireTLS"}}`, monitorSecret("p"))
@@ -189,6 +211,15 @@ func TestMonitorConnectionSources(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, connections, 1)
 		assert.False(t, connections[0].TLS.Required)
+	})
+	t.Run("kept while a rotated password is applied", func(t *testing.T) {
+		c, _ := connectionContext(t, true, "", monitorSecret("p"))
+		pg := clusterWithRole(cnpgv1.EnsurePresent, false)
+		pg.Status.ManagedRolesStatus.ByStatus = map[cnpgv1.RoleStatus][]string{cnpgv1.RoleStatusPendingReconciliation: {monitorRoleName}}
+		pg.Status.ManagedRolesStatus.PasswordStatus = map[string]cnpgv1.PasswordState{monitorRoleName: {TransactionID: 1}}
+		_, connections, err := monitorConnectionSources(c, pg)
+		require.NoError(t, err)
+		assert.Len(t, connections, 1, "withdrawing the endpoint would delete every agent")
 	})
 	for name, pg := range map[string]*cnpgv1.Cluster{
 		"no role":             monitoredCluster(true, 1, 1, false),

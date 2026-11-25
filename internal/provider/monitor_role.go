@@ -14,17 +14,25 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 const (
-	// monitorRoleName is the read-only role monitoring agents log in with,
-	// a member of pg_monitor and nothing else.
+	// monitorRoleName is the read-only role monitoring agents log in with.
+	// The name is reserved: an Instance cannot declare a managed role with it.
 	monitorRoleName = "openeverest_monitor"
 	// pgMonitorRole is PostgreSQL's built-in monitoring role: every pg_stat_*
-	// view, pg_settings and the monitoring functions, no table data.
+	// view, pg_settings and the monitoring functions.
 	pgMonitorRole = "pg_monitor"
+	// pgReadAllDataRole reads every table, which query analysis agents need
+	// to EXPLAIN application queries. It is what the monitoring users of the
+	// MySQL operators get (SELECT ON *.*), and it writes nothing.
+	pgReadAllDataRole = "pg_read_all_data"
+	// monitorConnectionLimit bounds the connections of every agent on one
+	// server together: Releem keeps one per database, up to 10.
+	monitorConnectionLimit = 30
 	// postgresContainerName and postgresPortName are the PostgreSQL
 	// container and port CloudNativePG gives every instance pod.
 	postgresContainerName = "postgres"
@@ -69,7 +77,9 @@ func syncMonitorRole(c *controller.Context, pg *cnpgv1.Cluster) error {
 		appendManagedRole(pg, monitorRole(c.Name(), cnpgv1.EnsurePresent))
 		return nil
 	}
-	if liveRole == nil && !hasSecret {
+	// A restored Instance inherits the role of its source, with the source's
+	// password: drop it like one this Instance created.
+	if liveRole == nil && !hasSecret && c.Instance().Spec.DataSource == nil {
 		return nil
 	}
 	// Once the role existed it stays declared absent, so CloudNativePG
@@ -118,8 +128,8 @@ func monitorRole(instance string, ensure cnpgv1.EnsureOption) cnpgv1.RoleConfigu
 	}
 	if ensure == cnpgv1.EnsurePresent {
 		role.Login = true
-		role.InRoles = []string{pgMonitorRole}
-		role.ConnectionLimit = 5
+		role.InRoles = []string{pgMonitorRole, pgReadAllDataRole}
+		role.ConnectionLimit = monitorConnectionLimit
 		role.PasswordSecret = &cnpgv1.LocalObjectReference{Name: monitorSecretName(instance)}
 	}
 	return role
@@ -150,6 +160,14 @@ func managedRole(pg *cnpgv1.Cluster, name string) *cnpgv1.RoleConfiguration {
 	return &pg.Spec.Managed.Roles[i]
 }
 
+// roleCreated reports whether CloudNativePG has created the role. A
+// password change sends it back to pending-reconciliation; its password
+// status stays, so agents keep their endpoints through a rotation.
+func roleCreated(pg *cnpgv1.Cluster, name string) bool {
+	_, hasPassword := pg.Status.ManagedRolesStatus.PasswordStatus[name]
+	return roleReconciled(pg, name) || hasPassword
+}
+
 func roleReconciled(pg *cnpgv1.Cluster, name string) bool {
 	return slices.Contains(pg.Status.ManagedRolesStatus.ByStatus[cnpgv1.RoleStatusReconciled], name)
 }
@@ -158,7 +176,7 @@ func roleReconciled(pg *cnpgv1.Cluster, name string) bool {
 // connection endpoint once CloudNativePG has created the monitor role.
 func monitorConnectionSources(c *controller.Context, pg *cnpgv1.Cluster) ([]corev1alpha1.MonitoringCredential, []corev1alpha1.ConnectionEndpoint, error) {
 	role := managedRole(pg, monitorRoleName)
-	if role == nil || role.Ensure == cnpgv1.EnsureAbsent || !roleReconciled(pg, monitorRoleName) {
+	if role == nil || role.Ensure == cnpgv1.EnsureAbsent || !roleCreated(pg, monitorRoleName) {
 		return nil, nil, nil
 	}
 	found, err := c.Exists(&corev1.Secret{}, monitorSecretName(c.Name()))
@@ -193,4 +211,12 @@ func monitorConnectionSources(c *controller.Context, pg *cnpgv1.Cluster) ([]core
 		Auth: &corev1alpha1.MetricsEndpointAuth{CredentialProfile: corev1alpha1.CredentialProfileMonitor},
 	}}
 	return credentials, connections, nil
+}
+
+// validateReservedRoles rejects managed roles the provider owns.
+func validateReservedRoles(custom *components.CNPGCustomSpec) error {
+	if managedRole(&cnpgv1.Cluster{Spec: cnpgv1.ClusterSpec{Managed: custom.Managed}}, monitorRoleName) != nil {
+		return fmt.Errorf("role %q is reserved for OpenEverest monitoring", monitorRoleName)
+	}
+	return nil
 }

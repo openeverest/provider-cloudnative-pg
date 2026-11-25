@@ -74,7 +74,7 @@ provider itself is covered under [Installation](#installation).
 | Connection pooling | ✅ | optional `proxy` component → CloudNativePG `Pooler` (PgBouncer, type `rw`); `parameters.readOnly` also creates a type `ro` Pooler; see [Connection pooling](#connection-pooling) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy` (all fields), or `parameters.affinity` — not both |
 | Pod priority | ✅ | `parameters.priorityClassName` → CloudNativePG `spec.priorityClassName`; the PriorityClass must exist, and changing it rolls the instance pods |
-| Monitoring | ✅ | Metrics of the PostgreSQL pods published for monitoring extensions through `spec.monitoring.destinations`. See [Monitoring](#monitoring) |
+| Monitoring | ✅ | Metrics of the PostgreSQL pods, and a monitoring user for agents that log in, published for monitoring extensions through `spec.monitoring.destinations`. See [Monitoring](#monitoring) |
 
 ### Extensions
 
@@ -612,6 +612,27 @@ The exporter always runs, so adding or removing a destination restarts nothing. 
 stays published without a destination, so a scraper OpenEverest doesn't configure (your own
 `PodMonitor`, a Datadog agent, Grafana Alloy) can read its pod selector, port, path, scheme and
 TLS settings from the Instance status. PgBouncer's metrics endpoint is not published yet.
+
+#### Monitoring user
+
+Some monitoring extensions run agents that log in to PostgreSQL instead of scraping metrics,
+such as [monitoring-releem](https://github.com/openeverest/monitoring-releem). While a
+destination of such a class (one that requires `connection`) is listed on the Instance:
+
+- The provider creates the `openeverest_monitor` role as a CloudNativePG managed role. It can
+  log in, is a member of `pg_monitor` and `pg_read_all_data` (query analysis agents EXPLAIN
+  application queries), and is limited to 30 connections per server.
+- Its password is generated into `<instance>-monitoring-monitor`, a `kubernetes.io/basic-auth`
+  Secret owned by the Instance. Editing the `password` key rotates it in PostgreSQL.
+- Once CloudNativePG has created the role, the Secret is published under the `monitor` profile
+  of `Instance.status.monitoring.sources.credentials`, with a connection endpoint for the
+  PostgreSQL pods (container `postgres`, port `postgresql`, TLS required when `tls.mode` is
+  `requireTLS`).
+
+When no listed destination needs it any more, the role is dropped and the Secret deleted. A
+restored Instance drops the role it inherits from its source, unless a destination needs it,
+in which case it gets a new password. `openeverest_monitor` is reserved: `managed.roles` cannot
+declare it. `pg_hba_file_rules` stays superuser-only, since CloudNativePG manages `pg_hba`.
 
 > [!IMPORTANT]
 > **Upgrading from 0.3.x.** The provider no longer creates a `PodMonitor` for
