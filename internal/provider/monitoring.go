@@ -48,6 +48,10 @@ func (p *Provider) MonitoringSources(c *controller.Context) (*corev1alpha1.Monit
 		return sources, nil
 	}
 	sources.Metrics = []corev1alpha1.MetricsEndpoint{engineMetricsEndpoint(c.Name(), pg)}
+	sources.Credentials, sources.Connections, err = monitorConnectionSources(c, pg)
+	if err != nil {
+		return nil, err
+	}
 	return sources, nil
 }
 

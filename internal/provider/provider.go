@@ -157,6 +157,9 @@ func (p *Provider) Sync(c *controller.Context) error {
 	cnpg.ApplyOutputPlugins(pg, &custom, engine.Version, c.Instance().Spec.Version)
 	cnpg.ApplyQueryStatisticsMonitoring(pg, &custom)
 	disableOperatorPodMonitor(pg)
+	if err := syncMonitorRole(c, pg); err != nil {
+		return err
+	}
 
 	if c.Instance().Spec.DataSource != nil {
 		recovery, externalCluster, err := barman.BuildRecoveryConfig(c, custom)

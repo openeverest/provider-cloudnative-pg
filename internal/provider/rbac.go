@@ -58,7 +58,7 @@ package provider
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create
 
 // Secrets (CNPG credentials in Status(), connection secret in provider-runtime):
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 // cert-manager Certificates of tls.issuer, read uncached:
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;create;update;patch
