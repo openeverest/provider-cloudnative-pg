@@ -43,6 +43,14 @@
     - create
     - patch
 - apiGroups:
+    - apiextensions.k8s.io
+  resourceNames:
+    - providers.core.openeverest.io
+  resources:
+    - customresourcedefinitions
+  verbs:
+    - get
+- apiGroups:
     - apps
   resources:
     - deployments
@@ -175,6 +183,14 @@
     - get
     - list
     - watch
+- apiGroups:
+    - core.openeverest.io
+  resourceNames:
+    - provider-cloudnative-pg
+  resources:
+    - providers/status
+  verbs:
+    - patch
 - apiGroups:
     - monitoring.coreos.com
   resources:

@@ -1389,3 +1389,4 @@ Please do not open public issues for security reports.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
+| New provider pod running but never `Ready` | It waits until the installed OpenEverest supports this build: the Warning Event in `kubectl describe provider provider-cloudnative-pg` says why |
