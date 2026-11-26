@@ -118,7 +118,8 @@ spec:
             content: kubectl apply -n $NAMESPACE -f 70-shrink-storage.yaml
             check:
               ($error != null): true
-              (contains($stderr, 'destructive change: cannot shrink from 1Gi to 512Mi')): true
+              (contains($stderr, 'cannot shrink from 1Gi to 512Mi')): true
+              (contains($stderr, 'destructive change')): true
               (contains($stderr, 'spec.components[engine].storage.storageClass')): true
 
     - name: delete-instance
