@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-secret-credentials
+type: kubernetes.io/basic-auth
+stringData:
+  username: app
+  password: Seeded-By-User-1
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: user-secret
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  userSecretRef:
+    name: user-secret-credentials
+  components:
+    engine:
+      type: postgresql
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi
