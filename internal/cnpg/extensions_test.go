@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -21,6 +22,39 @@ import (
 )
 
 var on = &components.ExtensionToggle{Enabled: true}
+
+func TestExtensionRestartWarningsPgStatStatements(t *testing.T) {
+	path := field.NewPath("extensions")
+	unset := withExtensions(components.ExtensionsSpec{})
+	tests := []struct {
+		name         string
+		old, updated *components.CNPGCustomSpec
+		want         []string
+	}{
+		{
+			name:    "disabled while unset, which is on by default",
+			old:     unset,
+			updated: withExtensions(components.ExtensionsSpec{PgStatStatements: off}),
+			want:    []string{"extensions.pgStatStatements.enabled: Disabling pgStatStatements restarts the instances"},
+		},
+		{name: "unset on both sides", old: nil, updated: unset},
+		{name: "set on explicitly from unset", old: unset, updated: withExtensions(components.ExtensionsSpec{PgStatStatements: on})},
+		{name: "unset again after off keeps it off", old: withExtensions(components.ExtensionsSpec{PgStatStatements: off}), updated: unset},
+		{
+			name:    "enabled again",
+			old:     withExtensions(components.ExtensionsSpec{PgStatStatements: off}),
+			updated: withExtensions(components.ExtensionsSpec{PgStatStatements: on}),
+			want:    []string{"extensions.pgStatStatements.enabled: Enabling pgStatStatements restarts the instances"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtensionRestartWarnings(tt.old, tt.updated, path); !slices.Equal(got, tt.want) {
+				t.Errorf("warnings = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func withExtensions(extensions components.ExtensionsSpec) *components.CNPGCustomSpec {
 	return &components.CNPGCustomSpec{Extensions: &extensions}
@@ -292,6 +326,37 @@ func TestApplyExtensionsPgCron(t *testing.T) {
 	ApplyExtensions(pg, userSet, images)
 	if got := pg.Spec.PostgresConfiguration.Parameters["cron.use_background_workers"]; got != "off" {
 		t.Errorf("cron.use_background_workers = %q, want the user's off", got)
+	}
+}
+
+func TestApplyOutputPlugins(t *testing.T) {
+	userSet := withExtensions(components.ExtensionsSpec{Wal2JSON: on})
+	userSet.PostgresConfiguration = &cnpgv1.PostgresConfiguration{Parameters: map[string]string{"output_plugin_libraries": "pgoutput"}}
+	tests := []struct {
+		name    string
+		custom  *components.CNPGCustomSpec
+		version string
+		want    string
+		wantSet bool
+	}{
+		{name: "wal2json on 18.6", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.6", want: "pgoutput, test_decoding, wal2json", wantSet: true},
+		{name: "wal2json on 18.10", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.10", want: "pgoutput, test_decoding, wal2json", wantSet: true},
+		{name: "wal2json on 18.4, which lacks the parameter", custom: withExtensions(components.ExtensionsSpec{Wal2JSON: on}), version: "18.4"},
+		{name: "no output plugin extension", custom: withExtensions(components.ExtensionsSpec{PostGIS: on}), version: "18.7"},
+		{name: "set by the user", custom: userSet, version: "18.7", want: "pgoutput", wantSet: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pg := &cnpgv1.Cluster{}
+			if tt.custom.PostgresConfiguration != nil {
+				pg.Spec.PostgresConfiguration = *tt.custom.PostgresConfiguration.DeepCopy()
+			}
+			ApplyOutputPlugins(pg, tt.custom, tt.version, "")
+			got, set := pg.Spec.PostgresConfiguration.Parameters["output_plugin_libraries"]
+			if set != tt.wantSet || got != tt.want {
+				t.Errorf("output_plugin_libraries = %q (set %t), want %q (set %t)", got, set, tt.want, tt.wantSet)
+			}
+		})
 	}
 }
 

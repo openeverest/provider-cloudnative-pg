@@ -198,6 +198,14 @@ func TestValidate(t *testing.T) {
 			},
 			wantWarnings: []string{"spec.components[engine].service.loadBalancerService.sourceRanges"},
 		},
+		{
+			name: "replication certificate with a proxy",
+			mutate: func(in *corev1alpha1.Instance) {
+				in.Spec.Parameters = &runtime.RawExtension{Raw: []byte(`{"tls":{"internalCertificateSecretName":"repl"}}`)}
+				in.Spec.Components[common.ComponentProxy] = corev1alpha1.ComponentSpec{Replicas: new(int32(1))}
+			},
+			want: []string{"spec.parameters.tls.internalCertificateSecretName"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -300,6 +308,38 @@ func TestValidateUpdate(t *testing.T) {
 				warned = append(warned, strings.SplitN(w, ":", 2)[0])
 			}
 			assert.Equal(t, tt.wantWarnings, warned, "warnings: %v", got.Warnings)
+		})
+	}
+}
+
+// TestValidateTLSUpdate checks that the certificate source of a reconciled
+// Instance can't change, while its mode can.
+func TestValidateTLSUpdate(t *testing.T) {
+	t.Parallel()
+	v := validationtest.New(t, New(), providerSpecPath)
+
+	for _, tt := range []struct {
+		name, old, updated string
+		want               []string
+	}{
+		{name: "mode", old: `{"tls":{"issuer":{"name":"acme"}}}`, updated: `{"tls":{"mode":"requireTLS","issuer":{"name":"acme"}}}`},
+		{name: "issuer", old: `{"tls":{"issuer":{"name":"acme"}}}`, updated: `{"tls":{"issuer":{"name":"other"}}}`, want: []string{"spec.parameters.tls"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			old := validationtest.Load(t, instanceFixture)
+			old.Spec.Parameters = &runtime.RawExtension{Raw: []byte(tt.old)}
+			old.Status.Version = "18.6"
+			updated := old.DeepCopy()
+			updated.Spec.Parameters = &runtime.RawExtension{Raw: []byte(tt.updated)}
+
+			got := v.Run(updated, old)
+			var fields []string
+			for _, err := range got.Errors {
+				fields = append(fields, err.Field)
+			}
+			assert.Equal(t, tt.want, fields, "errors: %v", got.Errors)
 		})
 	}
 }

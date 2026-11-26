@@ -29,6 +29,7 @@
     - secrets
   verbs:
     - create
+    - delete
     - get
     - list
     - patch
@@ -115,6 +116,22 @@
     - get
     - list
     - watch
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - certificates
+  verbs:
+    - create
+    - get
+    - patch
+    - update
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - clusterissuers
+    - issuers
+  verbs:
+    - get
 - apiGroups:
     - coordination.k8s.io
   resources:

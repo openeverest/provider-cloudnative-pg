@@ -16,5 +16,6 @@ spec:
       replicas: 3
       storage:
         size: 25Gi
-      parameters:
-        requireTLS: true
+  parameters:
+    tls:
+      mode: requireTLS

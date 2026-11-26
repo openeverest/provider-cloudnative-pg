@@ -1,0 +1,92 @@
+# tls-issuer: the server certificate from a cert-manager issuer, for the
+# instance's Services (poolers included) and an additional name.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: tls-issuer
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      mode: requireTLS
+      issuer:
+        name: databases-ca
+      additionalNames:
+        - tls-issuer.example.com
+  components:
+    engine:
+      type: postgresql
+      replicas: 2
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi
+    proxy:
+      type: pgbouncer
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+---
+# tls-own: the server and the replication certificates from the user's
+# Secrets (02-own-certificates, created by the test with the namespace's names).
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: tls-own
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      certificateSecretName: own-tls
+      internalCertificateSecretName: own-replication
+  components:
+    engine:
+      type: postgresql
+      replicas: 2
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi
+---
+# tls-managed: CloudNativePG's own CA, with an additional name.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: tls-managed
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      additionalNames:
+        - tls-managed.example.com
+  components:
+    engine:
+      type: postgresql
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi

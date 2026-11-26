@@ -1,0 +1,211 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# Bring your own CA through spec.parameters.tls. A company CA (a cert-manager
+# CA issuer here) signs the server certificate, either through tls.issuer or
+# in the user's Secret, and clients connect with sslmode=verify-full and the
+# ca.crt of the connection Secret. Replicas authenticate with the user's
+# replication certificate. Renewed certificates and changed additionalNames are
+# loaded without a restart; the certificate source can't change.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tls-certificates
+spec:
+  timeouts:
+    cleanup: 3m
+  steps:
+    - name: create-ca-and-own-certificates
+      try:
+        - apply:
+            file: 00-ca.yaml
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl wait --for=condition=Ready certificate/test-ca -n "$NAMESPACE" --timeout=90s
+              kubectl wait --for=condition=Ready issuer/databases-ca -n "$NAMESPACE" --timeout=60s
+              kubectl apply -n "$NAMESPACE" -f - <<YAML
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: own-tls
+              spec:
+                secretName: own-tls
+                commonName: Own server certificate
+                dnsNames:
+                  - tls-own-rw
+                  - tls-own-rw.$NAMESPACE.svc
+                  - tls-own-r.$NAMESPACE.svc
+                  - tls-own-ro.$NAMESPACE.svc
+                usages: [digital signature, key encipherment, server auth]
+                issuerRef:
+                  name: databases-ca
+                  kind: Issuer
+              ---
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: own-replication
+              spec:
+                secretName: own-replication
+                commonName: streaming_replica
+                usages: [digital signature, key encipherment, client auth]
+                issuerRef:
+                  name: databases-ca
+                  kind: Issuer
+              YAML
+              kubectl wait --for=condition=Ready certificate/own-tls certificate/own-replication -n "$NAMESPACE" --timeout=90s
+
+    - name: create-instances
+      try:
+        - apply:
+            file: 01-instances.yaml
+        - script:
+            timeout: 9m
+            content: |
+              set -eu
+              kubectl wait --for=create certificate/tls-issuer-tls -n "$NAMESPACE" --timeout=60s
+              kubectl wait --for=condition=Ready certificate/tls-issuer-tls -n "$NAMESPACE" --timeout=120s
+              for name in tls-issuer tls-own tls-managed; do
+                kubectl wait --for=create cluster/$name -n "$NAMESPACE" --timeout=90s
+              done
+              for name in tls-issuer tls-own tls-managed; do
+                kubectl wait --for=condition=Ready cluster/$name -n "$NAMESPACE" --timeout=420s
+              done
+              kubectl wait --for=condition=Available deployment/tls-issuer-pooler -n "$NAMESPACE" --timeout=180s
+              test "$(kubectl get cluster tls-issuer -n "$NAMESPACE" -o jsonpath='{.spec.certificates.serverTLSSecret}')" = tls-issuer-tls
+              test "$(kubectl get secret tls-issuer-tls -n "$NAMESPACE" -o jsonpath='{.metadata.ownerReferences[0].kind}')" = Certificate
+              test "$(kubectl get cluster tls-own -n "$NAMESPACE" -o jsonpath='{.spec.certificates.serverTLSSecret}/{.spec.certificates.serverCASecret}/{.spec.certificates.replicationTLSSecret}/{.spec.certificates.clientCASecret}')" = own-tls/own-tls/own-replication/own-replication
+              for secret in own-tls own-replication; do
+                test "$(kubectl get secret $secret -n "$NAMESPACE" -o jsonpath='{.metadata.labels.cnpg\.io/reload}')" = true
+              done
+      catch:
+        - script:
+            content: kubectl get instance,certificate,cluster,pooler,pod -n "$NAMESPACE" -o wide
+        - script:
+            content: |
+              for name in tls-issuer tls-own tls-managed; do
+                kubectl get instance $name -n "$NAMESPACE" -o jsonpath='{.metadata.name}{": "}{.status.conditions}{"\n"}'
+                kubectl get cluster $name -n "$NAMESPACE" -o jsonpath='{.status.phase}{" | "}{.status.phaseReason}{"\n"}'
+              done
+
+    - name: verify-full-with-the-company-ca
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              # Clients verify the server with ca.crt of the connection Secret.
+              connection_ca() {
+                for _ in $(seq 1 20); do
+                  conn="$(kubectl get instance "$1" -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+                  [ -n "$conn" ] && ca="$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')" && [ "$ca" = "$2" ] && return 0
+                  sleep 3
+                done
+                echo "ca.crt of the connection Secret of $1 is not the CA certificate expected"; return 1
+              }
+              company_ca="$(kubectl get secret test-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')"
+              connection_ca tls-issuer "$company_ca"
+              connection_ca tls-own "$company_ca"
+              connection_ca tls-managed "$(kubectl get secret tls-managed-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')"
+
+              # verify-full against each Service, with the connection Secret's ca.crt.
+              verify() {
+                instance="$1" host="$2"
+                conn="$(kubectl get instance "$instance" -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+                ca="$(kubectl get secret "$conn" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' | base64 -d)"
+                password="$(kubectl get secret "$instance"-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+                kubectl exec -i -n "$NAMESPACE" "$instance"-1 -c postgres -- sh -c \
+                  "cat > /controller/client-ca.crt && PGPASSWORD='$password' PGCONNECT_TIMEOUT=5 psql 'host=$host user=app dbname=app sslmode=verify-full sslrootcert=/controller/client-ca.crt' -tAc 'SELECT 1'" <<CA
+              $ca
+              CA
+              }
+              for target in tls-issuer:tls-issuer-rw tls-issuer:tls-issuer-r tls-issuer:tls-issuer-pooler tls-own:tls-own-rw tls-own:tls-own-r tls-managed:tls-managed-rw; do
+                instance="${target%%:*}" service="${target#*:}"
+                test "$(verify "$instance" "$service.$NAMESPACE.svc")" = 1 || { echo "verify-full failed for $service"; exit 1; }
+              done
+
+              served() {
+                kubectl exec -n "$NAMESPACE" "$1"-1 -c postgres -- sh -c \
+                  "openssl s_client -starttls postgres -connect $1-rw:5432 </dev/null 2>/dev/null | openssl x509 -noout $2"
+              }
+              for instance in tls-issuer tls-own; do
+                case "$(served $instance -issuer)" in *"Test Databases CA"*) ;; *) echo "$instance is not signed by the company CA"; exit 1 ;; esac
+              done
+              served tls-issuer -ext\ subjectAltName | grep -q tls-issuer.example.com
+              served tls-managed -ext\ subjectAltName | grep -q tls-managed.example.com
+
+    - name: replicas-authenticate-with-the-own-certificate
+      try:
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              primary="$(kubectl get cluster tls-own -n "$NAMESPACE" -o jsonpath='{.status.currentPrimary}')"
+              for _ in $(seq 1 30); do
+                out="$(kubectl exec -n "$NAMESPACE" "$primary" -c postgres -- psql -U postgres -tAc \
+                  "SELECT s.client_dn || ' by ' || s.issuer_dn FROM pg_stat_replication r JOIN pg_stat_ssl s USING (pid) WHERE r.usename = 'streaming_replica' AND s.ssl" || true)"
+                [ -n "$out" ] && break
+                sleep 2
+              done
+              echo "replication connection: $out"
+              case "$out" in *"CN=streaming_replica by "*"CN=Test Databases CA"*) ;; *) exit 1 ;; esac
+
+    - name: renew-and-rename-without-restart
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              uids() { kubectl get pod -n "$NAMESPACE" -l cnpg.io/podRole=instance -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid}{"\n"}{end}' | sort; }
+              before="$(uids)"
+              served() {
+                kubectl exec -n "$NAMESPACE" "$1"-1 -c postgres -- sh -c \
+                  "openssl s_client -starttls postgres -connect $1-rw:5432 </dev/null 2>/dev/null | openssl x509 -noout $2" || true
+              }
+              # Renew the own server certificate: cert-manager writes a new one to the Secret.
+              old="$(served tls-own -serial)"
+              kubectl patch certificate own-tls -n "$NAMESPACE" --type=merge -p '{"spec":{"commonName":"Own server certificate, renewed"}}'
+              kubectl patch instance tls-issuer -n "$NAMESPACE" --type=json -p \
+                '[{"op":"add","path":"/spec/parameters/tls/additionalNames/-","value":"tls-issuer.example.org"}]'
+              kubectl patch instance tls-managed -n "$NAMESPACE" --type=json -p \
+                '[{"op":"add","path":"/spec/parameters/tls/additionalNames/-","value":"tls-managed.example.org"}]'
+              for _ in $(seq 1 80); do
+                renewed="$(served tls-own -serial)"
+                issuer_names="$(served tls-issuer -ext\ subjectAltName)"
+                managed_names="$(served tls-managed -ext\ subjectAltName)"
+                if [ -n "$renewed" ] && [ "$renewed" != "$old" ] && echo "$issuer_names" | grep -q tls-issuer.example.org && echo "$managed_names" | grep -q tls-managed.example.org; then
+                  break
+                fi
+                sleep 3
+              done
+              echo "tls-own: $old -> $renewed"
+              echo "tls-issuer: $issuer_names"
+              echo "tls-managed: $managed_names"
+              test -n "$renewed" && test "$renewed" != "$old"
+              echo "$issuer_names" | grep -q tls-issuer.example.org
+              echo "$managed_names" | grep -q tls-managed.example.org
+              test "$(uids)" = "$before"
+      catch:
+        - script:
+            content: kubectl get pod -n "$NAMESPACE" -o wide
+
+    - name: certificate-source-cannot-change
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              # Refused at admission, or else before the next Sync, which then stops.
+              if out="$(kubectl patch instance tls-issuer -n "$NAMESPACE" --type=merge \
+                  -p '{"spec":{"parameters":{"tls":{"issuer":{"name":"other-ca"}}}}}' 2>&1)"; then
+                for _ in $(seq 1 30); do
+                  out="$(kubectl get instance tls-issuer -n "$NAMESPACE" -o jsonpath='{.status.conditions[*].message}')"
+                  case "$out" in *"can only be set when the instance is created"*) break ;; esac
+                  sleep 2
+                done
+                kubectl patch instance tls-issuer -n "$NAMESPACE" --type=merge \
+                  -p '{"spec":{"parameters":{"tls":{"issuer":{"name":"databases-ca"}}}}}'
+              fi
+              echo "$out"
+              case "$out" in *"can only be set when the instance is created"*) ;; *) exit 1 ;; esac
+              test "$(kubectl get certificate tls-issuer-tls -n "$NAMESPACE" -o jsonpath='{.spec.issuerRef.name}')" = databases-ca

@@ -1370,57 +1370,6 @@ spec:
                     - name
                   type: object
               type: object
-            certificates:
-              description: |-
-                Certificates are the TLS certificates of the instance (CNPG
-                certificates). Without them CNPG issues and rotates its own.
-                serverTLSSecret needs serverCASecret and cannot be combined with
-                serverAltDNSNames; replicationTLSSecret needs clientCASecret.
-              properties:
-                clientCASecret:
-                  description: |-
-                    The secret containing the Client CA certificate. If not defined, a new secret will be created
-                    with a self-signed CA and will be used to generate all the client certificates.<br />
-                    <br />
-                    Contains:<br />
-                    <br />
-                    - `ca.crt`: CA that should be used to validate the client certificates,
-                    used as `ssl_ca_file` of all the instances.<br />
-                    - `ca.key`: key used to generate client certificates, if ReplicationTLSSecret is provided,
-                    this can be omitted.<br />
-                  type: string
-                replicationTLSSecret:
-                  description: |-
-                    The secret of type kubernetes.io/tls containing the client certificate to authenticate as
-                    the `streaming_replica` user.
-                    If not defined, ClientCASecret must provide also `ca.key`, and a new secret will be
-                    created using the provided CA.
-                  type: string
-                serverAltDNSNames:
-                  description: The list of the server alternative DNS names to be added to the generated server TLS certificates, when required.
-                  items:
-                    type: string
-                  type: array
-                serverCASecret:
-                  description: |-
-                    The secret containing the Server CA certificate. If not defined, a new secret will be created
-                    with a self-signed CA and will be used to generate the TLS certificate ServerTLSSecret.<br />
-                    <br />
-                    Contains:<br />
-                    <br />
-                    - `ca.crt`: CA that should be used to validate the server certificate,
-                    used as `sslrootcert` in client connection strings.<br />
-                    - `ca.key`: key used to generate Server SSL certs, if ServerTLSSecret is provided,
-                    this can be omitted.<br />
-                  type: string
-                serverTLSSecret:
-                  description: |-
-                    The secret of type kubernetes.io/tls containing the server TLS certificate and key that will be set as
-                    `ssl_cert_file` and `ssl_key_file` so that clients can connect to postgres securely.
-                    If not defined, ServerCASecret must provide also `ca.key` and a new secret will be
-                    created using the provided CA.
-                  type: string
-              type: object
             extensions:
               description: Extensions configures first-class PostgreSQL extensions managed by this provider.
               properties:
@@ -1591,8 +1540,9 @@ spec:
                     the Timescale License (TSL) components such as compression and continuous
                     aggregates. The TSL is not open source: it allows internal use but
                     prohibits offering TimescaleDB to third parties as a database service.
-                    Requires PostgreSQL 18.6+; cannot be combined with timescaledb. Can only
-                    be enabled at creation; cannot be turned off.
+                    Requires PostgreSQL 18.6 or later (18.6 and 18.7 each have their own build,
+                    matched to the database version); cannot be combined with timescaledb. Can
+                    only be enabled at creation; cannot be turned off.
                   properties:
                     enabled:
                       description: |-
@@ -2438,10 +2388,10 @@ spec:
                 (postgresql.conf), pg_hba and pg_ident records, synchronous
                 replication, shared_preload_libraries, LDAP and more. CNPG manages a
                 fixed set of parameters itself and rejects them here. The provider adds
-                the records of requireTLS and pgHBA, the parameters and libraries of
-                enabled extensions and replication slot settings. pg_hba cannot be
-                combined with pgHBA. CNPG reloads PostgreSQL, or restarts the instances
-                for parameters that need it.
+                the records of spec.parameters.tls.mode and pgHBA, the parameters and
+                libraries of enabled extensions and replication slot settings. pg_hba
+                cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
+                instances for parameters that need it.
               properties:
                 enableAlterSystem:
                   description: |-
@@ -3011,13 +2961,6 @@ spec:
                   minimum: 1
                   type: integer
               type: object
-            requireTLS:
-              description: |-
-                RequireTLS rejects client connections that do not use TLS by placing a
-                "hostnossl all all all reject" rule before the user's pg_hba rules.
-                Unset or false keeps CNPG's default, which also accepts unencrypted
-                connections. Applied by CNPG with a configuration reload, no restart.
-              type: boolean
             resizeInUseVolumes:
               description: |-
                 ResizeInUseVolumes lets CNPG grow the data volumes of running instances
@@ -3266,7 +3209,80 @@ spec:
   monitoring:
     componentTypes:
       postgresql:
+        connection: Supported
         metrics: Native
+  parametersSchema:
+    openAPIV3Schema:
+      description: |-
+        Parameters defines instance-wide structured parameters that apply to the
+        entire cluster (Instance.spec.parameters).
+      properties:
+        tls:
+          description: TLS configures encryption in transit between clients and the instance.
+          properties:
+            additionalNames:
+              description: |-
+                AdditionalNames are DNS names the server certificate is valid for
+                besides those of the instance's Services, such as an external name
+                clients connect to. Used with issuer or the certificate CloudNativePG
+                issues; cannot be combined with certificateSecretName, whose
+                certificate carries its own names. Changing them reissues the
+                certificate without a restart.
+              items:
+                type: string
+              type: array
+            certificateSecretName:
+              description: |-
+                CertificateSecretName names a Secret in the instance namespace with the
+                server certificate, followed by any intermediate CA certificates
+                (tls.crt), its private key (tls.key) and the CA certificate clients
+                verify it with (ca.crt). The certificate must be valid for the names
+                clients connect to, such as <instance>-rw.<namespace>.svc. Cannot be
+                combined with issuer or additionalNames.
+              type: string
+            internalCertificateSecretName:
+              description: |-
+                InternalCertificateSecretName names a Secret in the instance namespace
+                with the client certificate replicas authenticate to the primary with,
+                in the same format: issued to the streaming_replica user (common name)
+                for client authentication, and signed by the CA in its ca.crt. Without
+                it CloudNativePG issues the replication certificate. Cannot be combined
+                with the proxy component, whose client certificate CloudNativePG issues
+                with the private key of that CA.
+              type: string
+            issuer:
+              description: |-
+                Issuer is the cert-manager issuer that signs the server certificate,
+                instead of the CA CloudNativePG creates. The provider requests it as
+                the Certificate <instance>-tls and cert-manager renews it. The issuer
+                must write its CA certificate to ca.crt, as the CA and Vault issuers do.
+              properties:
+                group:
+                  default: cert-manager.io
+                  description: |-
+                    Group is the API group of an external issuer, such as
+                    awspca.cert-manager.io.
+                  type: string
+                kind:
+                  default: Issuer
+                  description: |-
+                    Kind of the issuer: Issuer or ClusterIssuer, or the kind of an
+                    external issuer of group.
+                  type: string
+                name:
+                  description: Name of the issuer.
+                  type: string
+              required:
+                - name
+              type: object
+            mode:
+              default: preferTLS
+              description: |-
+                Mode controls which client connections must use TLS: preferTLS or
+                requireTLS. Changing it is applied without a restart.
+              type: string
+          type: object
+      type: object
   release:
     version: 0.3.4
   topologies:
@@ -3358,16 +3374,6 @@ spec:
                 regex:
                   message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
                   pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-            requireTLS:
-              fieldParams:
-                defaultValue: true
-                helperText: Rejects unencrypted connections. Clients must connect with TLS; libpq's default sslmode=prefer does, sslmode=disable is refused. Applied without a restart.
-                label: Require TLS for client connections
-                modes:
-                  edit:
-                    defaultValue: false
-              path: spec.components.engine.parameters.requireTLS
-              uiType: toggle
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -3386,7 +3392,6 @@ spec:
             - externalAccess
             - storageClass
             - priorityClassName
-            - requireTLS
             - pgHBA
             - configuration
           description: Configure advanced settings for your database
@@ -3649,7 +3654,7 @@ spec:
             timescaledbCommunity:
               fieldParams:
                 defaultValue: false
-                helperText: 'TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. PostgreSQL 18.6+ only; preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0).'
+                helperText: 'TimescaleDB with compression, continuous aggregates and policies. These features are under the Timescale License (TSL), which is not open source: use it only internally or with a license from Timescale; offering it to third parties as a database service is prohibited. Needs PostgreSQL 18.6 or later, such as 18.6 or 18.7 (each has its own build, matched to the database version); preloaded, so only at creation; cannot be disabled or combined with TimescaleDB (Apache-2.0).'
                 label: TimescaleDB Community (Timescale License)
                 modes:
                   edit:
@@ -3661,7 +3666,7 @@ spec:
               validation:
                 celExpressions:
                   - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) || (spec.version).matches("^18\\.([6-9]|[1-9][0-9]+)(\\.|$)")'
-                    message: TimescaleDB Community requires PostgreSQL 18.6 or later. Select a newer 18.x database version to enable it.
+                    message: TimescaleDB Community requires PostgreSQL 18.6 or later. Select 18.6, 18.7 or a newer 18.x database version to enable it.
                   - celExpr: '!(has(spec.components.engine.parameters.extensions.timescaledbCommunity.enabled) && spec.components.engine.parameters.extensions.timescaledbCommunity.enabled && has(spec.components.engine.parameters.extensions.timescaledb.enabled) && spec.components.engine.parameters.extensions.timescaledb.enabled)'
                     message: Enable either TimescaleDB (Apache-2.0) or TimescaleDB Community, not both.
             wal2json:
@@ -4041,12 +4046,110 @@ spec:
             - logicalSlotFailover
           description: Configure the resources your new database will have access to.
           label: Resources details
+        tls:
+          components:
+            certificates:
+              components:
+                certificateSecretName:
+                  fieldParams:
+                    helperText: Secret with the server certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). The certificate must be valid for the names clients connect to, such as <name>-rw.<namespace>.svc.
+                    label: Certificate secret
+                    modes:
+                      edit:
+                        disabled: true
+                  path: spec.parameters.tls.certificateSecretName
+                  uiType: text
+                  validation:
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                internalCertificateSecretName:
+                  fieldParams:
+                    helperText: Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key), and the CA certificate that signs it (ca.crt). Can't be combined with the PgBouncer proxy.
+                    label: Replication certificate secret
+                    modes:
+                      edit:
+                        disabled: true
+                  path: spec.parameters.tls.internalCertificateSecretName
+                  uiType: text
+                  validation:
+                    celExpressions:
+                      - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '''' || !has(spec.components.proxy)'
+                        message: Can't be combined with the PgBouncer proxy
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                issuer:
+                  components:
+                    issuerKind:
+                      fieldParams:
+                        helperText: Issuer when not set
+                        label: Issuer kind
+                        modes:
+                          edit:
+                            disabled: true
+                        options:
+                          - label: Issuer
+                            value: Issuer
+                          - label: ClusterIssuer
+                            value: ClusterIssuer
+                      path: spec.parameters.tls.issuer.kind
+                      uiType: select
+                    issuerName:
+                      fieldParams:
+                        helperText: Issuer that signs the server certificate for the instance's Services. It must write its CA certificate (ca.crt), as CA and Vault issuers do. Needs cert-manager.
+                        label: cert-manager issuer
+                        modes:
+                          edit:
+                            disabled: true
+                      path: spec.parameters.tls.issuer.name
+                      uiType: text
+                      validation:
+                        celExpressions:
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '''' || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '''''
+                            message: Use either an issuer or a certificate secret, not both
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.kind) || spec.parameters.tls.issuer.kind == '''' || (has(spec.parameters.tls.issuer.name) && spec.parameters.tls.issuer.name != '''')'
+                            message: Name the issuer
+                  componentsOrder:
+                    - issuerName
+                    - issuerKind
+                  groupType: line
+                  uiType: group
+              componentsOrder:
+                - issuer
+                - certificateSecretName
+                - internalCertificateSecretName
+              description: Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed after the instance is created.
+              groupType: bordered
+              label: Certificates
+              uiType: group
+            mode:
+              fieldParams:
+                defaultValue: requireTLS
+                helperText: 'CloudNativePG always serves TLS. Required rejects unencrypted clients at PostgreSQL and PgBouncer: libpq''s default sslmode=prefer connects, sslmode=disable is refused. Applied without a restart.'
+                label: TLS mode
+                modes:
+                  edit:
+                    defaultValue: preferTLS
+                options:
+                  - label: 'Required: clients must use TLS'
+                    value: requireTLS
+                  - label: 'Preferred: clients choose whether to use TLS'
+                    value: preferTLS
+              path: spec.parameters.tls.mode
+              uiType: select
+          componentsOrder:
+            - mode
+            - certificates
+          description: Encrypt client connections and choose the certificates of the instance.
+          label: TLS
       sectionsOrder:
         - databaseVersion
         - bootstrap
         - extensions
         - resources
         - pooler
+        - tls
         - advanced
   versions:
     - components:

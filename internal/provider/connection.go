@@ -20,8 +20,8 @@ const (
 	// configurable, so require works whether or not requireTLS is set.
 	// prefer is libpq's default, so publishing it adds nothing for libpq.
 	// pg-connection-string >= 2.7 treats prefer, require, and verify-ca as
-	// verify-full, which fails against the operator-managed server
-	// certificate; the README says where the cluster CA lives.
+	// verify-full, which needs the CA certificate the connection details
+	// carry as ca.crt.
 	sslModeRequire = "require"
 
 	// hostRProperty is the DNS name of the read Service (<cluster>-r).
@@ -71,6 +71,9 @@ func connectionDetails(c *controller.Context, pg *cnpgv1.Cluster) (controller.Co
 	if pg.IsReadOnlyServiceEnabled() && pg.Spec.Instances >= 2 {
 		extra[hostROProperty] = serviceHost(pg.GetServiceReadOnlyName(), c.Namespace())
 	}
+	if ca := serverCACertificate(c, pg); ca != "" {
+		extra[caCertificateKey] = ca
+	}
 
 	return controller.ConnectionDetails{
 		Type:                 "postgresql",
@@ -82,6 +85,18 @@ func connectionDetails(c *controller.Context, pg *cnpgv1.Cluster) (controller.Co
 		URI:                  postgresURI(username, password, host, port, database, sslModeRequire),
 		AdditionalProperties: extra,
 	}, true
+}
+
+// serverCACertificate is the CA certificate clients verify the server with,
+// sslrootcert for sslmode=verify-full: ca.crt of the Secret CloudNativePG
+// checks the server certificate against, its own CA or the one the Instance
+// sets. It is "" until that Secret exists.
+func serverCACertificate(c *controller.Context, pg *cnpgv1.Cluster) string {
+	secret := &corev1.Secret{}
+	if err := c.Get(secret, pg.GetServerCASecretName()); err != nil {
+		return ""
+	}
+	return string(secret.Data[caCertificateKey])
 }
 
 func connectionIdentity(pg *cnpgv1.Cluster) (secretName, database string, ok bool) {

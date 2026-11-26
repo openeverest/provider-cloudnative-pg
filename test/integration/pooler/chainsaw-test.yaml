@@ -59,7 +59,7 @@ spec:
               password="$(kubectl get secret pooled-app -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
               ips="$(kubectl get pods -n "$NAMESPACE" -l cnpg.io/poolerName=pooled-pooler -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}')"
               test -n "$ips"
-              # requireTLS also applies at the pooler (client_tls_sslmode=require).
+              # tls.mode requireTLS also applies at the pooler (client_tls_sslmode=require).
               test "$(kubectl get pooler pooled-pooler -n "$NAMESPACE" -o jsonpath='{.spec.pgbouncer.parameters.client_tls_sslmode}')" = require
               for _ in $(seq 1 30); do
                 plain="$(kubectl exec -n "$NAMESPACE" pooled-1 -c postgres -- env PGPASSWORD="$password" \

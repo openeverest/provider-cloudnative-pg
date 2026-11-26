@@ -15,6 +15,13 @@ func (e extension) restarts() bool {
 	return e.catalogEntry != "" || len(e.preloadLibraries) > 0 || len(e.defaultParameters) > 0
 }
 
+// pgStatStatementsUnset reports an unset pgStatStatements toggle, which
+// DefaultPgStatStatements resolves to what the Cluster runs: on for instances
+// created with it on by default. Admission cannot read the Cluster.
+func pgStatStatementsUnset(custom *components.CNPGCustomSpec) bool {
+	return custom == nil || custom.Extensions == nil || custom.Extensions.PgStatStatements == nil
+}
+
 // ValidateExtensionChanges checks an update of the extension toggles against
 // the stored ones: an extension created in the database cannot be turned off,
 // and a creation-only extension cannot be turned on. path is the extensions
@@ -52,6 +59,15 @@ func ExtensionRestartWarnings(old, updated *components.CNPGCustomSpec, path *fie
 	var warnings []string
 	for _, ext := range firstClassExtensions {
 		was, is := ext.enabled(old), ext.enabled(updated)
+		if ext.field == "pgStatStatements" {
+			// Unset keeps what the Cluster runs, which is on unless set off before.
+			if pgStatStatementsUnset(updated) {
+				continue
+			}
+			if pgStatStatementsUnset(old) {
+				was = true
+			}
+		}
 		enabledPath := path.Child(ext.field, "enabled").String()
 		if was == is || !ext.restarts() || forbidden[enabledPath] {
 			continue

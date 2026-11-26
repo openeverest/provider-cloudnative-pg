@@ -11,6 +11,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	barman "github.com/openeverest/provider-cloudnative-pg/internal/cnpg/barman"
@@ -42,6 +43,9 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(field.NewPath("spec", "backup", "storages"), barman.ValidateSchedules(instance.Spec.Backup))...)
 	errs = append(errs, invalid(field.NewPath("spec", "dataSource"), barman.ValidateDataSource(instance.Spec.DataSource))...)
 	errs = append(errs, invalid(componentsPath.Key(common.ComponentProxy), validateProxy(instance))...)
+	_, proxy := instance.Spec.Components[common.ComponentProxy]
+	errs = append(errs, cnpg.ValidateTLS(instance, proxy)...)
+	errs = append(errs, cnpg.ValidateTLSTransition(instance, in.Old)...)
 
 	custom, err := engineCustomSpec(engine)
 	if err != nil {
@@ -57,6 +61,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, serviceErrs...)
 	errs = append(errs, invalid(engineParams.Child("extensions"), cnpg.ValidateExtensions(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("extensions", "pgStatStatements"), cnpg.ValidatePgStatStatements(&custom))...)
+	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
 	warnings := append(monitoringWarnings(instance, &custom), serviceWarnings...)
 	if in.Old != nil {
@@ -77,8 +82,10 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 // images in the ClusterImageCatalog, and the live Cluster and Database for
 // writes admission didn't see, including a change of the HA replication slot
 // prefix CloudNativePG would refuse, and the bootstrap VolumeSnapshot: authorized
-// for this Instance, and unchanged once the Cluster exists. At admission its errors are warnings; before
-// Sync they block it.
+// for this Instance, and unchanged once the Cluster exists, the certificate
+// Secrets CloudNativePG would otherwise get stuck on, and that the
+// certificates the Cluster uses don't change. At admission its errors are
+// warnings; before Sync they block it.
 func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	custom, err := engineCustomSpec(engine)
@@ -113,6 +120,22 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 			return nil, err
 		}
 		errs = append(errs, field.Invalid(check.path, field.OmitValueType{}, err.Error()))
+	}
+
+	tls, err := cnpg.TLS(c.Instance())
+	if err != nil {
+		// Validate reports it.
+		return errs, nil
+	}
+	for _, check := range []func(*controller.Context, definition.TLSParameters) (field.ErrorList, error){
+		validateCertificateSecrets,
+		validateTLSChange,
+	} {
+		tlsErrs, err := check(c, tls)
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, tlsErrs...)
 	}
 	return errs, nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -62,6 +63,7 @@ func New() *Provider {
 				addBarmanCloudScheme,
 				batchv1.AddToScheme,
 				appsv1.AddToScheme,
+				cmv1.AddToScheme,
 			},
 		},
 	}
@@ -94,6 +96,10 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if err := cnpg.DefaultPgStatStatements(c, &custom); err != nil {
 		return err
 	}
+	tls, err := cnpg.TLS(c.Instance())
+	if err != nil {
+		return err
+	}
 
 	pg := &cnpgv1.Cluster{
 		ObjectMeta: c.ObjectMeta(c.Name()),
@@ -106,7 +112,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if err := cnpg.ApplyPgHBA(pg, &custom); err != nil {
 		return err
 	}
-	cnpg.ApplyRequireTLS(pg, &custom)
+	cnpg.ApplyTLS(pg, tls, c.Name())
 	cnpg.ApplyReplicationSlots(pg, &custom, engine.Version, c.Instance().Spec.Version)
 
 	if custom.Managed != nil {
@@ -138,10 +144,6 @@ func (p *Provider) Sync(c *controller.Context) error {
 		pg.Spec.ImagePullPolicy = corev1.PullIfNotPresent
 	}
 
-	if custom.Certificates != nil {
-		pg.Spec.Certificates = custom.Certificates
-	}
-
 	if custom.Monitoring != nil {
 		pg.Spec.Monitoring = custom.Monitoring
 	}
@@ -157,8 +159,12 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 	cnpg.ApplyExtensions(pg, &custom, extensionImages)
+	cnpg.ApplyOutputPlugins(pg, &custom, engine.Version, c.Instance().Spec.Version)
 	cnpg.ApplyQueryStatisticsMonitoring(pg, &custom)
 	disableOperatorPodMonitor(pg)
+	if err := syncMonitorRole(c, pg); err != nil {
+		return err
+	}
 
 	if c.Instance().Spec.DataSource != nil {
 		recovery, externalCluster, err := barman.BuildRecoveryConfig(c, custom)
@@ -185,6 +191,10 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
+	if err := syncCertificates(c, pg, tls); err != nil {
+		return err
+	}
+
 	if err := c.Apply(pg); err != nil {
 		return err
 	}
@@ -198,7 +208,7 @@ func (p *Provider) Sync(c *controller.Context) error {
 		return err
 	}
 
-	if err := syncPooler(c, custom.RequireTLS != nil && *custom.RequireTLS); err != nil {
+	if err := syncPooler(c, cnpg.RequireTLS(tls)); err != nil {
 		return err
 	}
 

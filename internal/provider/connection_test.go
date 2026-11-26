@@ -264,6 +264,40 @@ func TestConnectionDetails(t *testing.T) {
 				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
 			),
 		},
+		{
+			name: "CA certificate of CloudNativePG's own CA",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{Bootstrap: appDatabase},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				caSecret("pg-ca", "CNPG CA"),
+			},
+			wantConverged: true,
+			want: withCACertificate(connectionWant(
+				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
+				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
+			), "CNPG CA"),
+		},
+		{
+			name: "CA certificate of the server certificate the Instance sets",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{
+					Bootstrap:    appDatabase,
+					Certificates: &cnpgv1.CertificatesConfiguration{ServerTLSSecret: "pg-tls", ServerCASecret: "pg-tls"},
+				},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				caSecret("pg-ca", "CNPG CA"),
+				caSecret("pg-tls", "Acme Root CA"),
+			},
+			wantConverged: true,
+			want: withCACertificate(connectionWant(
+				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
+				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
+			), "Acme Root CA"),
+		},
 	}
 
 	for _, tt := range tests {
@@ -401,4 +435,16 @@ func statusWithObjects(t *testing.T, cluster *cnpgv1.Cluster, parameters string,
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 	c := controller.NewContext(context.Background(), cl, instance, "provider-cloudnative-pg")
 	return (&Provider{}).Status(c)
+}
+
+func caSecret(name, certificate string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Data:       map[string][]byte{"ca.crt": []byte(certificate)},
+	}
+}
+
+func withCACertificate(details controller.ConnectionDetails, certificate string) controller.ConnectionDetails {
+	details.AdditionalProperties[caCertificateKey] = certificate
+	return details
 }

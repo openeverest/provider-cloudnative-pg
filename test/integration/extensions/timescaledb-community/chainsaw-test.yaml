@@ -59,3 +59,13 @@ spec:
 
               expect "SELECT count(*) > 0 FROM timescaledb_information.chunks WHERE hypertable_name = 'metrics' AND is_compressed" "t"
               expect "SELECT count(*) > 0 FROM metrics_hourly" "t"
+
+              # Background jobs (policies) run through the job scheduler.
+              kubectl exec -i -n "$NAMESPACE" tsdb-community-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d app -q <<'SQL'
+              SET ROLE app;
+              CREATE PROCEDURE noop_job(job_id int, config jsonb) LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; END $$;
+              SELECT add_job('noop_job', INTERVAL '1 second');
+              SQL
+              stats="SELECT total_successes > 0 AND total_failures = 0 FROM timescaledb_information.job_stats js JOIN timescaledb_information.jobs j USING (job_id) WHERE j.proc_name = 'noop_job'"
+              for i in $(seq 1 30); do [ "$(q "$stats")" = "t" ] && break; sleep 2; done
+              expect "$stats" "t"

@@ -71,6 +71,8 @@ type extension struct {
 	// database owner.
 	ownerParameters []string
 	requires        []string
+	// outputPlugin is the logical decoding output plugin the extension provides.
+	outputPlugin string
 	// conflicts lists extensions that cannot be enabled together with this
 	// one, such as the two TimescaleDB editions, which create the same SQL
 	// extension from different images.
@@ -155,6 +157,7 @@ var firstClassExtensions = []extension{
 		field:        "wal2json",
 		toggle:       func(e *components.ExtensionsSpec) *components.ExtensionToggle { return e.Wal2JSON },
 		catalogEntry: "wal2json",
+		outputPlugin: "wal2json",
 	},
 	{
 		field:        "age",
@@ -268,8 +271,8 @@ func ValidateExtensions(custom *components.CNPGCustomSpec, engineVersion, instan
 	for _, ext := range enabled {
 		if ext.catalogEntry != "" && major != imageVolumePostgresMajor {
 			return fmt.Errorf(
-				"extensions.%s requires PostgreSQL 18 (got major %q); set spec.version to a 18.x release (e.g. \"18.4\"); also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
-				ext.field, major,
+				"extensions.%s requires PostgreSQL 18 (got major %q); set spec.version to a 18.x release (e.g. %q); also requires Kubernetes ImageVolume (1.35+, or 1.33/1.34 with the ImageVolume feature gate)",
+				ext.field, major, common.PostgresDefaultVersion,
 			)
 		}
 		if ext.minPostgresVersion != "" && !versionAtLeast(version, ext.minPostgresVersion) {
@@ -478,6 +481,37 @@ func ApplyExtensions(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec, imag
 			pg.Spec.Bootstrap.InitDB = initDB
 		}
 	}
+}
+
+// PostgreSQL 18.6 and later only let replication slots use the output plugins
+// listed in output_plugin_libraries. Older minors do not know the parameter and
+// would refuse to start with it.
+const (
+	outputPluginLibrariesParameter  = "output_plugin_libraries"
+	outputPluginLibrariesMinVersion = "18.6"
+	defaultOutputPluginLibraries    = "pgoutput, test_decoding"
+)
+
+// ApplyOutputPlugins adds the output plugins of the enabled extensions to
+// output_plugin_libraries, unless it is set in parameters.postgresql.
+func ApplyOutputPlugins(pg *cnpgv1.Cluster, custom *components.CNPGCustomSpec, engineVersion, instanceVersion string) {
+	if !versionAtLeast(postgresVersion(engineVersion, instanceVersion), outputPluginLibrariesMinVersion) {
+		return
+	}
+	libraries := defaultOutputPluginLibraries
+	for _, ext := range enabledExtensions(custom) {
+		if ext.outputPlugin != "" {
+			libraries += ", " + ext.outputPlugin
+		}
+	}
+	cfg := &pg.Spec.PostgresConfiguration
+	if _, set := cfg.Parameters[outputPluginLibrariesParameter]; set || libraries == defaultOutputPluginLibraries {
+		return
+	}
+	if cfg.Parameters == nil {
+		cfg.Parameters = map[string]string{}
+	}
+	cfg.Parameters[outputPluginLibrariesParameter] = libraries
 }
 
 // ValidateExtensionsAtCreation rejects enabling a creation-only extension on a
