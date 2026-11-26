@@ -52,6 +52,17 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 		return controller.ValidationResult{Errors: append(errs, field.Invalid(engineParams, field.OmitValueType{}, err.Error()))}
 	}
 	errs = append(errs, invalid(engineParams, cnpg.ValidateCustomSpec(&custom))...)
+	if custom.PostgresConfiguration != nil {
+		errs = append(errs, invalid(engineParams.Child("postgresql", "parameters"),
+			cnpg.ValidateParameters(custom.PostgresConfiguration.Parameters, &custom, engine.Version, instance.Spec.Version))...)
+	}
+	if configuration, err := cnpg.ParseConfiguration(custom.Configuration); err != nil {
+		errs = append(errs, invalid(engineParams.Child("configuration"), err)...)
+	} else {
+		errs = append(errs, invalid(engineParams.Child("configuration"),
+			cnpg.ValidateParameters(configuration, &custom, engine.Version, instance.Spec.Version))...)
+		errs = append(errs, invalid(engineParams.Child("configuration"), cnpg.ApplyConfiguration(&custom))...)
+	}
 	errs = append(errs, invalid(engineParams.Child("postgresql", "synchronous"), cnpg.ValidateSynchronous(engine, &custom))...)
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
@@ -64,6 +75,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	if in.Old != nil {
 		old, err := engineCustomSpec(in.Old.Spec.Components[common.ComponentEngine])
 		if err == nil {
+			_ = cnpg.ApplyConfiguration(&old)
 			errs = append(errs, cnpg.ValidateExtensionChanges(&old, &custom, engineParams.Child("extensions"))...)
 			warnings = append(warnings, cnpg.ExtensionRestartWarnings(&old, &custom, engineParams.Child("extensions"))...)
 			if old.PriorityClassName != custom.PriorityClassName {

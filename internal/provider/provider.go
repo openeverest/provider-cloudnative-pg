@@ -89,6 +89,9 @@ func (p *Provider) Sync(c *controller.Context) error {
 			return fmt.Errorf("failed to decode component custom spec: %w", err)
 		}
 	}
+	if err := cnpg.ApplyConfiguration(&custom); err != nil {
+		return err
+	}
 	if err := cnpg.DefaultPgStatStatements(c, &custom); err != nil {
 		return err
 	}

@@ -832,16 +832,20 @@ ui:
               message: 'Each line must be a host, hostssl or hostnossl record (or a # comment), e.g. hostssl orders orders_app 10.0.0.0/8 scram-sha-256'
         configuration:
           uiType: text
-          path: spec.components.engine.parameters.postgresql.parameters
+          path: spec.components.engine.parameters.configuration
           fieldParams:
-            label: "Engine configuration"
+            label: "PostgreSQL configuration"
             placeholder: |2
-              operationProfiling:
-                mode: slowOps
-                slowOpThresholdMs: 200
+              max_connections = 200
+              shared_buffers = '512MB'
+            helperText: "Optional. PostgreSQL parameters in postgresql.conf syntax, one name = value per line; quote values that contain blanks. Parameters CloudNativePG manages itself (port, archive_mode, ssl, ...) are refused. Parameters that need it restart the instances."
             multiline: true
             minRows: 3
-            maxRows: 8
+            maxRows: 10
+          validation:
+            regex:
+              pattern: '^([ \t]*(#.*)?|[ \t]*[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?([ \t]*=[ \t]*|[ \t]+)[^ \t#=].*)(\r?\n([ \t]*(#.*)?|[ \t]*[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?([ \t]*=[ \t]*|[ \t]+)[^ \t#=].*))*[ \t\r\n]*$'
+              message: "Each line must be name = value (or a # comment), e.g. max_connections = 200"
       componentsOrder:
         - storageClass
         - priorityClassName

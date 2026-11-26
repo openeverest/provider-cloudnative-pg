@@ -7,8 +7,9 @@ spec:
   description: |
     The provider's admission webhook: it rejects an invalid Instance with the
     field path, admits it while the provider is down, blocks an update only on
-    errors the stored Instance did not already have, and rejects turning off
-    an extension that is created in the database.
+    errors the stored Instance did not already have, rejects turning off
+    an extension that is created in the database, and rejects a PostgreSQL
+    parameter CloudNativePG manages itself.
   # Scales the provider down, which every other test depends on.
   concurrent: false
   catch:
@@ -98,6 +99,15 @@ spec:
               ($error != null): true
               (contains($stderr, 'spec.components[engine].parameters.extensions.pgvector.enabled')): true
               (contains($stderr, 'cannot be disabled once enabled')): true
+
+    - name: reject-fixed-parameter
+      try:
+        - script:
+            content: kubectl apply --dry-run=server -n $NAMESPACE -f 60-fixed-parameter.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].parameters.configuration')): true
+              (contains($stderr, 'port')): true
 
     - name: delete-instance
       try:

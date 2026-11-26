@@ -66,6 +66,7 @@ spec:
     parameters:
       max_connections: "100"
       shared_buffers: "128MB"
+      work_mem: "8MB"
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: Database

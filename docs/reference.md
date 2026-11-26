@@ -1435,6 +1435,25 @@ database and owner.
 
 Name of the VolumeSnapshot.
 
+### `configuration`
+
+`string`
+
+Configuration sets PostgreSQL parameters in postgresql.conf syntax, one
+per line, such as
+
+```text
+max_connections = 200
+shared_buffers = '512MB'
+```
+
+The "=" is optional, blank lines and # comments are ignored, and values
+with blanks are single-quoted. The parameters are added to
+postgresql.parameters; a parameter cannot be set in both, nor twice.
+Parameters CloudNativePG manages itself (port, archive_mode, ssl, ...)
+are refused. CNPG reloads PostgreSQL, or restarts the instances for
+parameters that need it.
+
 ### `extensions`
 
 `object`
@@ -2469,10 +2488,11 @@ PostgreSQL is CNPG's PostgreSQL configuration: parameters
 (postgresql.conf), pg_hba and pg_ident records, synchronous
 replication, shared_preload_libraries, LDAP and more. CNPG manages a
 fixed set of parameters itself and rejects them here. The provider adds
-the records of spec.parameters.tls.mode and pgHBA, the parameters and
-libraries of enabled extensions and replication slot settings. pg_hba
-cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
-instances for parameters that need it.
+the parameters of configuration, the records of spec.parameters.tls.mode
+and pgHBA, the parameters and libraries of enabled extensions and
+replication slot settings. pg_hba cannot be combined with pgHBA. CNPG
+reloads PostgreSQL, or restarts the instances for parameters that need
+it.
 
 #### `postgresql.enableAlterSystem`
 
