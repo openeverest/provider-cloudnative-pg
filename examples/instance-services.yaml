@@ -2,17 +2,17 @@
 #
 # Connection Secret keys (see README "Connection details"):
 #   host      — read-write Service (<instance>-rw), or the LoadBalancer address
-#               when serviceType is LoadBalancer (once assigned); or the pooler
-#               when proxy is set
+#               when serviceType is LoadBalancer (once assigned)
 #   host-r    — every ready instance (<instance>-r); omitted if "r" is disabled
 #   host-ro   — ready replicas only (<instance>-ro); needs replicas >= 2 and
 #               "ro" not disabled
 #
 # Prefer engine.service over parameters.managed.services.additional. Adjust
 # annotations for your cloud provider. Set sourceRanges on LoadBalancer so the
-# LB is not open to the world (CIDRs or bare IPs). TLS: the published host is
-# the LB address; CNPG cert SANs are the in-cluster Service DNS names — see
-# README "Service exposure".
+# LB is not open to the world (CIDRs or bare IPs); admission warns when they
+# are omitted. Do not combine with a proxy (PgBouncer); that combination is
+# rejected. TLS: the published host is the LB address; CNPG cert SANs are the
+# in-cluster Service DNS names — see README "Service exposure".
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:

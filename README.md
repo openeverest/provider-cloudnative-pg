@@ -485,8 +485,9 @@ connection Secret named by `.status.connectionSecretRef.name`.
   the load balancer address once assigned (TLS name checks against that
   address need care; see [Service exposure](#service-exposure)). With the
   [`proxy` component](#connection-pooling) set, `host`, `port`, and `uri` point
-  at the rw pooler Service instead — even if `engine.service` also exposes a
-  LoadBalancer or NodePort — and `host-r` stays on the PostgreSQL Service.
+  at the rw pooler Service instead, and `host-r` stays on the PostgreSQL
+  Service. `engine.service` LoadBalancer / NodePort cannot be combined with a
+  proxy.
 - `host-r` is `<cluster>-r.<namespace>.svc`. That Service targets every ready
   instance, including the primary. It is omitted when the read Service is
   disabled.
@@ -530,15 +531,16 @@ CloudNativePG [managed services](https://cloudnative-pg.io/documentation/current
 | `annotations` | Service template annotations (cloud LB settings) |
 | `loadBalancerService.sourceRanges` | `spec.loadBalancerSourceRanges` (LoadBalancer only) |
 
-Do not combine this with `parameters.managed.services.additional`; use one or the
-other. `parameters.managed.services.disabledDefaultServices` still works alongside
-`engine.service`. See [examples/instance-services.yaml](examples/instance-services.yaml).
+Do not combine this with `parameters.managed.services.additional` or a
+[`proxy`](#connection-pooling); admission rejects both. `parameters.managed.services.disabledDefaultServices`
+still works alongside `engine.service`. See
+[examples/instance-services.yaml](examples/instance-services.yaml).
 
 **Security.** CloudNativePG's default `pg_hba` admits password auth from any
 address. Prefer `loadBalancerService.sourceRanges` (CIDRs or bare IPs) so the
 cloud load balancer only accepts your clients, and tighten `pgHBA` if you need
 finer rules. Without `sourceRanges`, a public LoadBalancer reaches Postgres for
-anyone who has credentials.
+anyone who has credentials; admission warns when they are omitted.
 
 **TLS.** The connection Secret publishes `sslmode=require` and, for
 LoadBalancer, sets `host` to the external address. CloudNativePG's server
@@ -549,11 +551,12 @@ certificate SANs cover the in-cluster Service DNS names (including
 `certificates.serverAltDNSNames` for that external name, or
 `sslmode=no-verify` / an in-cluster tunnel. See [Connection details](#connection-details).
 
-**Proxy.** With a [`proxy` component](#connection-pooling), connection details
-still point at the pooler, and Ready is not gated on the load balancer address
-or NodePort allocation. The managed Service still selects the PostgreSQL
-primary (`rw`), so clients that use `<instance>-rw-lb` (or a node IP +
-`nodePort`) bypass PgBouncer. Admission warns when both are set.
+**Proxy.** `engine.service` LoadBalancer / NodePort is rejected together with a
+[`proxy` component](#connection-pooling): CloudNativePG's managed Service
+selects the PostgreSQL primary (`rw`), so external clients would bypass
+PgBouncer. Pooled external access will use `proxy.service` on the Pooler
+Service later. Without a proxy, prefer `loadBalancerService.sourceRanges`;
+admission warns when LoadBalancer has none.
 
 ### Instance status
 
@@ -825,7 +828,7 @@ The technology-specific knobs worth knowing about:
 | `postgresql` | `engine` | Full CloudNativePG `PostgresConfiguration` (GUCs, sync replicas, …) |
 | `extensions.*` | `engine` | First-class extensions; see [Extensions](#extensions). TimescaleDB (both editions) also defaults `timescaledb.telemetry_level=off` and `max_locks_per_transaction=128` unless set in `postgresql.parameters` |
 | `affinity` | `engine` | CloudNativePG `AffinityConfiguration`; rejected together with `schedulingPolicy` `affinity`, `nodeSelector` or `tolerations` |
-| `managed` | `engine` | Managed PostgreSQL roles; `managed.services.additional` is rejected together with `engine.service` LoadBalancer / NodePort |
+| `managed` | `engine` | Managed PostgreSQL roles; `managed.services.additional` is rejected together with `engine.service` LoadBalancer / NodePort; those service types are also rejected together with a `proxy` component |
 | `resizeInUseVolumes` | `engine` | Allow PVC expansion on running instances |
 | `priorityClassName` | `engine` | Kubernetes PriorityClass of the instance pods |
 | `certificates` | `engine` | TLS certificate configuration passthrough |
