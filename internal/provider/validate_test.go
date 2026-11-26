@@ -72,6 +72,35 @@ func TestValidate(t *testing.T) {
 			want:   []string{"spec.components[engine].parameters.extensions.pgStatStatements"},
 		},
 		{
+			name:   "configuration",
+			mutate: engineParameters(`{"configuration":"max_connections = 200\nwork_mem = '8MB'","postgresql":{"parameters":{"shared_buffers":"256MB"}}}`),
+		},
+		{
+			name:   "configuration that does not parse",
+			mutate: engineParameters(`{"configuration":"max_connections"}`),
+			want:   []string{"spec.components[engine].parameters.configuration"},
+		},
+		{
+			name:   "configuration repeating postgresql.parameters",
+			mutate: engineParameters(`{"configuration":"max_connections = 200","postgresql":{"parameters":{"max_connections":"100"}}}`),
+			want:   []string{"spec.components[engine].parameters.configuration"},
+		},
+		{
+			name:   "parameter CloudNativePG manages in configuration",
+			mutate: engineParameters(`{"configuration":"port = 6432"}`),
+			want:   []string{"spec.components[engine].parameters.configuration"},
+		},
+		{
+			name:   "parameter CloudNativePG manages in postgresql.parameters",
+			mutate: engineParameters(`{"postgresql":{"parameters":{"listen_addresses":"*"}}}`),
+			want:   []string{"spec.components[engine].parameters.postgresql.parameters"},
+		},
+		{
+			name:   "pg_stat_statements parameters in configuration with the extension off",
+			mutate: engineParameters(`{"extensions":{"pgStatStatements":{"enabled":false}},"configuration":"pg_stat_statements.max = 1000"}`),
+			want:   []string{"spec.components[engine].parameters.extensions.pgStatStatements"},
+		},
+		{
 			name:   "synchronous standbys not fewer than replicas",
 			mutate: engineParameters(`{"postgresql":{"synchronous":{"method":"any","number":3}}}`),
 			want:   []string{"spec.components[engine].parameters.postgresql.synchronous"},

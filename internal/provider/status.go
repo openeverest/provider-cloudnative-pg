@@ -128,6 +128,8 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 				return controller.Status{}, fmt.Errorf("failed to decode component custom spec: %w", err)
 			}
 		}
+		// Validate reports an invalid configuration.
+		_ = cnpg.ApplyConfiguration(&custom)
 		status.Message = cnpg.ExtensionsWait(c, &custom)
 	}
 

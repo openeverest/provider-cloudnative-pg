@@ -1370,6 +1370,21 @@ spec:
                     - name
                   type: object
               type: object
+            configuration:
+              description: |-
+                Configuration sets PostgreSQL parameters in postgresql.conf syntax, one
+                per line, such as
+
+                  max_connections = 200
+                  shared_buffers = '512MB'
+
+                The "=" is optional, blank lines and # comments are ignored, and values
+                with blanks are single-quoted. The parameters are added to
+                postgresql.parameters; a parameter cannot be set in both, nor twice.
+                Parameters CloudNativePG manages itself (port, archive_mode, ssl, ...)
+                are refused. CNPG reloads PostgreSQL, or restarts the instances for
+                parameters that need it.
+              type: string
             extensions:
               description: Extensions configures first-class PostgreSQL extensions managed by this provider.
               properties:
@@ -2388,10 +2403,11 @@ spec:
                 (postgresql.conf), pg_hba and pg_ident records, synchronous
                 replication, shared_preload_libraries, LDAP and more. CNPG manages a
                 fixed set of parameters itself and rejects them here. The provider adds
-                the records of spec.parameters.tls.mode and pgHBA, the parameters and
-                libraries of enabled extensions and replication slot settings. pg_hba
-                cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
-                instances for parameters that need it.
+                the parameters of configuration, the records of spec.parameters.tls.mode
+                and pgHBA, the parameters and libraries of enabled extensions and
+                replication slot settings. pg_hba cannot be combined with pgHBA. CNPG
+                reloads PostgreSQL, or restarts the instances for parameters that need
+                it.
               properties:
                 enableAlterSystem:
                   description: |-
@@ -3323,16 +3339,20 @@ spec:
           components:
             configuration:
               fieldParams:
-                label: Engine configuration
-                maxRows: 8
+                helperText: Optional. PostgreSQL parameters in postgresql.conf syntax, one name = value per line; quote values that contain blanks. Parameters CloudNativePG manages itself (port, archive_mode, ssl, ...) are refused. Parameters that need it restart the instances.
+                label: PostgreSQL configuration
+                maxRows: 10
                 minRows: 3
                 multiline: true
                 placeholder: |
-                  operationProfiling:
-                    mode: slowOps
-                    slowOpThresholdMs: 200
-              path: spec.components.engine.parameters.postgresql.parameters
+                  max_connections = 200
+                  shared_buffers = '512MB'
+              path: spec.components.engine.parameters.configuration
               uiType: text
+              validation:
+                regex:
+                  message: 'Each line must be name = value (or a # comment), e.g. max_connections = 200'
+                  pattern: ^([ \t]*(#.*)?|[ \t]*[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?([ \t]*=[ \t]*|[ \t]+)[^ \t#=].*)(\r?\n([ \t]*(#.*)?|[ \t]*[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?([ \t]*=[ \t]*|[ \t]+)[^ \t#=].*))*[ \t\r\n]*$
             pgHBA:
               fieldParams:
                 helperText: 'Optional. One pg_hba.conf record per line, checked in order before the default rule that admits every user with a password; end with a reject record to allow only what is listed. Methods: scram-sha-256, md5, cert, ldap, radius, reject. Applied without a restart.'

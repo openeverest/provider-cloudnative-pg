@@ -36,6 +36,20 @@ type CNPGCustomSpec struct {
 	// Applied by CNPG with a configuration reload, no restart.
 	PgHBA string `json:"pgHBA,omitempty"`
 
+	// Configuration sets PostgreSQL parameters in postgresql.conf syntax, one
+	// per line, such as
+	//
+	//   max_connections = 200
+	//   shared_buffers = '512MB'
+	//
+	// The "=" is optional, blank lines and # comments are ignored, and values
+	// with blanks are single-quoted. The parameters are added to
+	// postgresql.parameters; a parameter cannot be set in both, nor twice.
+	// Parameters CloudNativePG manages itself (port, archive_mode, ssl, ...)
+	// are refused. CNPG reloads PostgreSQL, or restarts the instances for
+	// parameters that need it.
+	Configuration string `json:"configuration,omitempty"`
+
 	// WALStorage provisions a separate WAL PVC per PostgreSQL instance using
 	// CNPG's native storage configuration. Once enabled it cannot be removed.
 	WALStorage *cnpgv1.StorageConfiguration `json:"walStorage,omitempty"`
@@ -61,10 +75,11 @@ type CNPGCustomSpec struct {
 	// (postgresql.conf), pg_hba and pg_ident records, synchronous
 	// replication, shared_preload_libraries, LDAP and more. CNPG manages a
 	// fixed set of parameters itself and rejects them here. The provider adds
-	// the records of spec.parameters.tls.mode and pgHBA, the parameters and
-	// libraries of enabled extensions and replication slot settings. pg_hba
-	// cannot be combined with pgHBA. CNPG reloads PostgreSQL, or restarts the
-	// instances for parameters that need it.
+	// the parameters of configuration, the records of spec.parameters.tls.mode
+	// and pgHBA, the parameters and libraries of enabled extensions and
+	// replication slot settings. pg_hba cannot be combined with pgHBA. CNPG
+	// reloads PostgreSQL, or restarts the instances for parameters that need
+	// it.
 	PostgresConfiguration *cnpgv1.PostgresConfiguration `json:"postgresql,omitempty"`
 
 	// Managed is CNPG's declarative management of PostgreSQL roles

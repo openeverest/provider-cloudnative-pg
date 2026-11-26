@@ -62,7 +62,7 @@ provider itself is covered under [Installation](#installation).
 | Horizontal scaling | ✅ | `spec.components.engine.replicas` |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
 | Version upgrades | ✅ | of the deployed PostgreSQL version — change `spec.version`; see [Versions](#versions) |
-| Custom configuration | ✅ | PostgreSQL GUCs via `spec.components.engine.parameters.postgresql` |
+| Custom configuration | ✅ | PostgreSQL parameters via `parameters.configuration` (postgresql.conf text, the UI's field) or `parameters.postgresql.parameters`; see [PostgreSQL configuration](#postgresql-configuration) |
 | Bootstrap (`initdb`) | ✅ | database name, owner, and credentials secret |
 | Bootstrap from a VolumeSnapshot | ✅ | `bootstrap.volumeSnapshot.name`: start from a snapshot of another instance's volume; see [Start from a volume snapshot](#start-from-a-volume-snapshot) |
 | Managed roles | ✅ | CloudNativePG managed roles with readiness gating in `Status()` |
@@ -827,6 +827,7 @@ The technology-specific knobs worth knowing about:
 |---|---|---|
 | `bootstrap.initdb` | `engine` | Initial database name, owner, and optional credentials Secret |
 | `bootstrap.volumeSnapshot.name` | `engine` | Start from a VolumeSnapshot instead of an empty database; see [Start from a volume snapshot](#start-from-a-volume-snapshot) |
+| `configuration` | `engine` | PostgreSQL parameters in postgresql.conf syntax, merged into `postgresql.parameters`; see [PostgreSQL configuration](#postgresql-configuration) |
 | `postgresql` | `engine` | Full CloudNativePG `PostgresConfiguration` (GUCs, sync replicas, …) |
 | `extensions.*` | `engine` | First-class extensions; see [Extensions](#extensions). TimescaleDB (both editions) also defaults `timescaledb.telemetry_level=off` and `max_locks_per_transaction=128` unless set in `postgresql.parameters` |
 | `affinity` | `engine` | CloudNativePG `AffinityConfiguration`; rejected together with `schedulingPolicy` `affinity`, `nodeSelector` or `tolerations` |
@@ -1189,6 +1190,35 @@ spec:
     engine:
       parameters: {}
 ```
+
+### PostgreSQL configuration
+
+`configuration` sets PostgreSQL parameters as
+[`postgresql.conf`](https://www.postgresql.org/docs/current/config-setting.html#CONFIG-SETTING-CONFIGURATION-FILE)
+lines (the UI has it under **Advanced configuration**):
+
+```yaml
+spec:
+  components:
+    engine:
+      parameters:
+        configuration: |
+          max_connections = 200
+          shared_buffers = '512MB'
+          pgaudit.log = 'ddl, role'
+```
+
+- One `name = value` per line; the `=` is optional, blank lines and `#`
+  comments are ignored, and values with blanks are single-quoted (`''` for a
+  quote).
+- The parameters are added to `postgresql.parameters`, CloudNativePG's map,
+  which can still be set directly. A parameter set in both, or twice, is
+  refused.
+- Parameters CloudNativePG manages itself (`port`, `listen_addresses`,
+  `archive_mode`, `ssl*`, `shared_preload_libraries`, `primary_conninfo`, …)
+  are refused before the Cluster is applied, in either field.
+- CloudNativePG reloads PostgreSQL, or restarts the instances one at a time for
+  parameters that need it.
 
 ### Client access rules (pg_hba)
 
