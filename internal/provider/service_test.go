@@ -124,7 +124,12 @@ func TestValidateService(t *testing.T) {
 	}{
 		{name: "nil", instance: "pg"},
 		{name: "ClusterIP", instance: "pg", svc: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeClusterIP}},
-		{name: "LoadBalancer", instance: "pg", svc: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}},
+		{
+			name:        "LoadBalancer without sourceRanges warns",
+			instance:    "pg",
+			svc:         &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			wantWarning: "0.0.0.0/0",
+		},
 		{
 			name:     "ExternalName unsupported",
 			instance: "pg",
@@ -164,7 +169,12 @@ func TestValidateService(t *testing.T) {
 		{
 			name:     "engine.service with managed.services.additional",
 			instance: "pg",
-			svc:      &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			svc: &corev1alpha1.Service{
+				ServiceType: corev1.ServiceTypeLoadBalancer,
+				LoadBalancerService: &corev1alpha1.LoadBalancerService{
+					SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+				},
+			},
 			custom: &components.CNPGCustomSpec{
 				Managed: &cnpgv1.ManagedConfiguration{
 					Services: &cnpgv1.ManagedServices{
@@ -175,9 +185,14 @@ func TestValidateService(t *testing.T) {
 			wantErr: "managed.services.additional",
 		},
 		{
-			name:     "disabledDefaultServices alone is fine",
+			name: "disabledDefaultServices alone is fine",
 			instance: "pg",
-			svc:      &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			svc: &corev1alpha1.Service{
+				ServiceType: corev1.ServiceTypeLoadBalancer,
+				LoadBalancerService: &corev1alpha1.LoadBalancerService{
+					SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+				},
+			},
 			custom: &components.CNPGCustomSpec{
 				Managed: &cnpgv1.ManagedConfiguration{
 					Services: &cnpgv1.ManagedServices{
@@ -189,22 +204,38 @@ func TestValidateService(t *testing.T) {
 		{
 			name:     "instance name too long for managed Service",
 			instance: strings.Repeat("a", 58),
-			svc:      &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
-			wantErr:  "DNS label",
+			svc: &corev1alpha1.Service{
+				ServiceType: corev1.ServiceTypeLoadBalancer,
+				LoadBalancerService: &corev1alpha1.LoadBalancerService{
+					SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+				},
+			},
+			wantErr: "DNS label",
 		},
 		{
-			name:        "proxy with LoadBalancer warns",
-			instance:    "pg",
-			svc:         &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
-			hasProxy:    true,
-			wantWarning: "bypass the proxy",
+			name:     "proxy with LoadBalancer is forbidden",
+			instance: "pg",
+			svc: &corev1alpha1.Service{
+				ServiceType: corev1.ServiceTypeLoadBalancer,
+				LoadBalancerService: &corev1alpha1.LoadBalancerService{
+					SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+				},
+			},
+			hasProxy: true,
+			wantErr:  "proxy",
 		},
 		{
-			name:        "proxy with NodePort warns",
-			instance:    "pg",
-			svc:         &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
-			hasProxy:    true,
-			wantWarning: "bypass the proxy",
+			name:     "proxy with NodePort is forbidden",
+			instance: "pg",
+			svc:      &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
+			hasProxy: true,
+			wantErr:  "proxy",
+		},
+		{
+			name:     "proxy with ClusterIP is fine",
+			instance: "pg",
+			svc:      &corev1alpha1.Service{ServiceType: corev1.ServiceTypeClusterIP},
+			hasProxy: true,
 		},
 	}
 

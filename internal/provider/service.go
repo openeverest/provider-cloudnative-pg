@@ -128,10 +128,21 @@ func validateService(instanceName string, svc *corev1alpha1.Service, custom *com
 			"cannot be combined with engine.service LoadBalancer or NodePort; use one or the other"))
 	}
 
+	// CNPG managed.services selectorType rw targets the primary, not the
+	// Pooler (Pooler uses its own serviceTemplate). Reject so clients cannot
+	// bypass PgBouncer; pooled external access belongs on proxy.service later.
 	if serviceExposes(svc) && hasProxy {
-		warnings = append(warnings, path.String()+": exposes the PostgreSQL primary directly; "+
-			"clients using the managed Service bypass the proxy (PgBouncer). "+
-			"Connection details still point at the pooler")
+		errs = append(errs, field.Forbidden(path,
+			"cannot be combined with a proxy; engine.service exposes the PostgreSQL primary and bypasses PgBouncer"))
+	}
+
+	if svc != nil && svc.ServiceType == corev1.ServiceTypeLoadBalancer {
+		hasRanges := svc.LoadBalancerService != nil && len(svc.LoadBalancerService.SourceRanges) > 0
+		if !hasRanges {
+			warnings = append(warnings, path.Child("loadBalancerService", "sourceRanges").String()+
+				": LoadBalancer with no sourceRanges admits traffic from anywhere (0.0.0.0/0); "+
+				"set CIDRs or IPs to restrict clients")
+		}
 	}
 
 	return errs, warnings

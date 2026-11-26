@@ -132,7 +132,12 @@ func TestValidate(t *testing.T) {
 			name: "engine.service with managed.services.additional",
 			mutate: func(in *corev1alpha1.Instance) {
 				engine := in.Spec.Components[common.ComponentEngine]
-				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
 				engine.Parameters = &runtime.RawExtension{Raw: []byte(`{"managed":{"services":{"additional":[{"selectorType":"rw","serviceTemplate":{"metadata":{"name":"custom"}}}]}}}`)}
 				in.Spec.Components[common.ComponentEngine] = engine
 			},
@@ -157,22 +162,41 @@ func TestValidate(t *testing.T) {
 			mutate: func(in *corev1alpha1.Instance) {
 				in.Name = strings.Repeat("a", 58)
 				engine := in.Spec.Components[common.ComponentEngine]
-				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
 				in.Spec.Components[common.ComponentEngine] = engine
 			},
 			want: []string{"spec.components[engine].service"},
 		},
 		{
-			name: "proxy with engine.service LoadBalancer warns",
+			name: "proxy with engine.service LoadBalancer is forbidden",
 			mutate: func(in *corev1alpha1.Instance) {
 				engine := in.Spec.Components[common.ComponentEngine]
-				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
 				in.Spec.Components[common.ComponentEngine] = engine
 				in.Spec.Components[common.ComponentProxy] = corev1alpha1.ComponentSpec{
 					Replicas: new(int32(1)),
 				}
 			},
-			wantWarnings: []string{"spec.components[engine].service"},
+			want: []string{"spec.components[engine].service"},
+		},
+		{
+			name: "LoadBalancer without sourceRanges warns",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			wantWarnings: []string{"spec.components[engine].service.loadBalancerService.sourceRanges"},
 		},
 	}
 	for _, tt := range tests {
