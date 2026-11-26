@@ -231,7 +231,7 @@ func TestValidateEngineMinimums(t *testing.T) {
 func TestValidateCustomSpecWALMinimum(t *testing.T) {
 	for size, wantErr := range map[string]bool{"1Gi": false, "512Mi": true} {
 		custom := components.CNPGCustomSpec{WALStorage: &cnpgv1.StorageConfiguration{Size: size}}
-		errs := ValidateCustomSpec(field.NewPath("p"), &custom)
+		errs := ValidateCustomSpecMinimums(field.NewPath("p"), &custom)
 		if (len(errs) > 0) != wantErr {
 			t.Errorf("walStorage.size %s: errors = %v, wantErr %v", size, errs, wantErr)
 		}

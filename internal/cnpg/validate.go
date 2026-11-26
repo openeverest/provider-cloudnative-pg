@@ -46,11 +46,8 @@ func ValidateCustomSpec(path *field.Path, custom *components.CNPGCustomSpec) fie
 	}
 	if custom.WALStorage != nil {
 		walPath := path.Child("walStorage")
-		switch size := custom.WALStorage.GetSizeOrNil(); {
-		case size == nil || size.Sign() <= 0:
+		if size := custom.WALStorage.GetSizeOrNil(); size == nil || size.Sign() <= 0 {
 			errs = append(errs, field.Required(walPath.Child("size"), "walStorage requires a valid positive size or pvcTemplate storage request"))
-		case size.Cmp(MinStorage) < 0:
-			errs = append(errs, field.Invalid(walPath.Child("size"), size.String(), minStorageDetail))
 		}
 	}
 	if custom.Bootstrap != nil {
@@ -128,6 +125,19 @@ func ValidateEngine(path *field.Path, engine corev1alpha1.ComponentSpec) field.E
 		return append(errs, field.Required(path.Child("resources"), "CPU and memory requests and limits are required"))
 	}
 	return append(errs, resourceErrors(path.Child("resources"), engine.Resources)...)
+}
+
+// ValidateCustomSpecMinimums reports a WAL volume smaller than MinStorage at
+// its field under path, the engine's parameters. ValidateCustomSpec reports a
+// missing size.
+func ValidateCustomSpecMinimums(path *field.Path, custom *components.CNPGCustomSpec) field.ErrorList {
+	if custom.WALStorage == nil {
+		return nil
+	}
+	if size := custom.WALStorage.GetSizeOrNil(); size != nil && size.Sign() > 0 && size.Cmp(MinStorage) < 0 {
+		return field.ErrorList{field.Invalid(path.Child("walStorage", "size"), size.String(), minStorageDetail)}
+	}
+	return nil
 }
 
 // ValidateEngineMinimums reports the engine's storage size, CPU and memory

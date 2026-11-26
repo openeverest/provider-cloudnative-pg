@@ -82,10 +82,10 @@ func TestValidate(t *testing.T) {
 			want: []string{
 				"metadata.name",
 				"spec.components[engine].parameters.priorityClassName",
-				"spec.components[engine].parameters.walStorage.size",
 				"spec.components[engine].storage.size",
 				"spec.components[engine].resources.requests[memory]",
 				"spec.components[engine].resources.limits[memory]",
+				"spec.components[engine].parameters.walStorage.size",
 			},
 		},
 		{
@@ -193,6 +193,16 @@ func TestValidateMinimumsOfReconciledInstance(t *testing.T) {
 	got := v.Run(reconciled, nil)
 	assert.Empty(t, got.Errors)
 	assert.Equal(t, memory, warningFields(got.Warnings), "warnings: %v", got.Warnings)
+
+	edited := small()
+	edited.Spec.Components[common.ComponentEngine].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("2")
+	got = v.Run(edited, reconciled)
+	assert.Empty(t, got.Errors, "an update keeping the stored Instance's minimums")
+	assert.Equal(t, memory, warningFields(got.Warnings), "warnings: %v", got.Warnings)
+
+	edited.Spec.Components[common.ComponentEngine].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("50m")
+	got = v.Run(edited, reconciled)
+	assert.Equal(t, []string{"spec.components[engine].resources.requests[cpu]"}, errorFields(got), "a new minimum missed: %v", got.Errors)
 }
 
 // TestValidateDestructiveUpdate checks the changes that lose data or cannot

@@ -61,14 +61,19 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
 	warnings := monitoringWarnings(instance, &custom)
-	minimums := cnpg.ValidateEngineMinimums(enginePath, engine)
-	if in.Old == nil && instance.Status.ObservedGeneration > 0 {
+	minimums := append(cnpg.ValidateEngineMinimums(enginePath, engine), cnpg.ValidateCustomSpecMinimums(engineParams, &custom)...)
+	switch {
+	case in.Old == nil && instance.Status.ObservedGeneration > 0:
 		// A reconciled Instance written before the minimums keeps syncing.
-		// At admission, a minimum the stored Instance misses doesn't block an update.
 		for _, err := range minimums {
 			warnings = append(warnings, err.Error())
 		}
-	} else {
+	case in.Old != nil:
+		// A minimum the stored Instance already misses doesn't block an update.
+		kept, carried := carryOver(minimums, oldMinimums(in.Old))
+		errs = append(errs, kept...)
+		warnings = append(warnings, carried...)
+	default:
 		errs = append(errs, minimums...)
 	}
 
@@ -191,4 +196,39 @@ func invalid(path *field.Path, err error) field.ErrorList {
 		return nil
 	}
 	return field.ErrorList{field.Invalid(path, field.OmitValueType{}, err.Error())}
+}
+
+// oldMinimums reports the minimums the stored Instance misses.
+func oldMinimums(old *corev1alpha1.Instance) field.ErrorList {
+	engine := old.Spec.Components[common.ComponentEngine]
+	errs := cnpg.ValidateEngineMinimums(enginePath, engine)
+	if custom, err := engineCustomSpec(engine); err == nil {
+		errs = append(errs, cnpg.ValidateCustomSpecMinimums(engineParams, &custom)...)
+	}
+	return errs
+}
+
+// carryOver splits errs into those previous lacks, kept, and those previous
+// already had at the same type and field, returned as warnings. The runtime
+// ratchets admission the same way, but against Validate on the stored
+// Instance, which reports its minimums as warnings once it was reconciled.
+func carryOver(errs, previous field.ErrorList) (field.ErrorList, []string) {
+	type key struct {
+		typ   field.ErrorType
+		field string
+	}
+	had := make(map[key]bool, len(previous))
+	for _, err := range previous {
+		had[key{err.Type, err.Field}] = true
+	}
+	var kept field.ErrorList
+	var carried []string
+	for _, err := range errs {
+		if had[key{err.Type, err.Field}] {
+			carried = append(carried, err.Error())
+		} else {
+			kept = append(kept, err)
+		}
+	}
+	return kept, carried
 }
