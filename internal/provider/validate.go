@@ -61,6 +61,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
 	warnings := monitoringWarnings(instance, &custom)
+	warnings = append(warnings, userSecretWarnings(instance, in.Old, &custom)...)
 	if in.Old != nil {
 		old, err := engineCustomSpec(in.Old.Spec.Components[common.ComponentEngine])
 		if err == nil {
@@ -81,7 +82,8 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 // prefix CloudNativePG would refuse, and the bootstrap VolumeSnapshot: authorized
 // for this Instance, and unchanged once the Cluster exists, the certificate
 // Secrets CloudNativePG would otherwise get stuck on, and that the
-// certificates the Cluster uses don't change. At admission its errors are
+// certificates the Cluster uses don't change, and the Secret spec.userSecretRef
+// refers to, before the Cluster is created. At admission its errors are
 // warnings; before Sync they block it.
 func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
@@ -118,6 +120,12 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 		}
 		errs = append(errs, field.Invalid(check.path, field.OmitValueType{}, err.Error()))
 	}
+
+	userSecretErrs, err := validateUserSecret(c, &custom)
+	if err != nil {
+		return nil, err
+	}
+	errs = append(errs, userSecretErrs...)
 
 	tls, err := cnpg.TLS(c.Instance())
 	if err != nil {

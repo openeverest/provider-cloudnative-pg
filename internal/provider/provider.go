@@ -92,6 +92,11 @@ func (p *Provider) Sync(c *controller.Context) error {
 	if err := cnpg.DefaultPgStatStatements(c, &custom); err != nil {
 		return err
 	}
+	// Before the bootstrap is built: initdb, or the recovery from a data
+	// source, which takes the owner's Secret from initdb.
+	if err := applyUserSecret(c, &custom); err != nil {
+		return err
+	}
 	tls, err := cnpg.TLS(c.Instance())
 	if err != nil {
 		return err

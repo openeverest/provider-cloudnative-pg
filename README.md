@@ -64,6 +64,7 @@ provider itself is covered under [Installation](#installation).
 | Version upgrades | ✅ | of the deployed PostgreSQL version — change `spec.version`; see [Versions](#versions) |
 | Custom configuration | ✅ | PostgreSQL GUCs via `spec.components.engine.parameters.postgresql` |
 | Bootstrap (`initdb`) | ✅ | database name, owner, and credentials secret |
+| Initial credentials (`spec.userSecretRef`) | ✅ | the application owner's username and password from your Secret; see [Bring your own credentials](#bring-your-own-credentials) |
 | Bootstrap from a VolumeSnapshot | ✅ | `bootstrap.volumeSnapshot.name`: start from a snapshot of another instance's volume; see [Start from a volume snapshot](#start-from-a-volume-snapshot) |
 | Managed roles | ✅ | CloudNativePG managed roles with readiness gating in `Status()` |
 | Synchronous replication | ✅ | `parameters.postgresql.synchronous`; see [Synchronous replication](#synchronous-replication) |
@@ -537,6 +538,50 @@ unless the client is given the CA certificate. Use `ca.crt` of the connection
 details as `sslrootcert` with `sslmode=verify-full` to authenticate the server.
 `pg-connection-string` also accepts `sslmode=no-verify`, which encrypts
 without checking the certificate. That value is not a libpq `sslmode`.
+
+
+### Bring your own credentials
+
+`spec.userSecretRef` names a Secret in the instance namespace with the
+application database owner's `username` and `password`, a `kubernetes.io/basic-auth`
+Secret for example. The provider sets it as CloudNativePG's
+`bootstrap.initdb.secret` (or the recovery's, with `spec.dataSource`), so
+PostgreSQL starts with those credentials and the connection details carry
+them, with `secretName` set to that Secret.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-instance-credentials
+type: kubernetes.io/basic-auth
+stringData:
+  username: app        # the application database owner
+  password: change-me
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: my-instance
+spec:
+  userSecretRef:
+    name: my-instance-credentials
+  # providerRef, components, ... as above
+```
+
+- `username` must be the owner of the application database: `bootstrap.initdb.owner`,
+  else `bootstrap.initdb.database`, else `app`. Until the Secret has both keys
+  and that username, nothing is created and the Instance is not `Ready`, with
+  the reason in its conditions. OpenEverest waits for a missing Secret.
+- `bootstrap.initdb.secret` in the engine parameters takes precedence: the
+  provider then ignores `spec.userSecretRef` and warns.
+- It only applies when the instance is created. Set on an existing instance,
+  it is ignored with a warning, and an instance created before this release
+  keeps the credentials CloudNativePG generated.
+- The Secret stays yours: it isn't deleted with the instance. CloudNativePG
+  sets the owner's password from it, so a new `password` there changes the
+  password in PostgreSQL and in the connection details.
+- The `postgres` superuser is unaffected: it stays disabled.
 
 ### Instance status
 
@@ -1296,7 +1341,7 @@ code generation, and the backup/restore interfaces are documented once for all p
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
 | `docs/reference.md` | Generated parameter reference — do not edit; document fields with doc comments in `definition/` |
 | `hack/reference-docs/` | Generator of `docs/reference.md` (run by `make generate`) |
-| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `presets`, `tls-only`, `wal-storage` |
+| `test/integration/` | Chainsaw suites: `core/admission`, `core/replicaset`, `extensions/bundled`, `extensions/imagevolume`, `extensions/pg-stat-statements`, `extensions/pgcron-pgrepack`, `extensions/pgpartman`, `presets`, `tls-only`, `user-secret`, `wal-storage` |
 | `test/e2e-cluster/` | Chainsaw e2e suites on the full OpenEverest platform: `backup`, `backup-restore`, `backup-deletion`, `monitoring` |
 | `test/testdata/` | Fixtures shared by the suites (S3Mock object store) |
 | `test/e2e/` | Playwright UI tests against the OpenEverest UI |

@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# spec.userSecretRef seeds the application owner's credentials: PostgreSQL
+# starts with them and the connection details carry them. A username that
+# isn't the owner blocks the creation.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: user-secret
+spec:
+  timeouts:
+    cleanup: 3m
+  steps:
+    - name: create-instance
+      try:
+        - apply:
+            file: 00-instance.yaml
+        - script:
+            timeout: 6m
+            content: |
+              set -e
+              kubectl wait --for=create cluster/user-secret -n "$NAMESPACE" --timeout=60s
+              test "$(kubectl get cluster user-secret -n "$NAMESPACE" -o jsonpath='{.spec.bootstrap.initdb.secret.name}')" = user-secret-credentials
+              kubectl wait --for=condition=Ready cluster/user-secret -n "$NAMESPACE" --timeout=300s
+      catch:
+        - script:
+            content: kubectl get instance,cluster,pod -n "$NAMESPACE" -o wide
+        - script:
+            content: kubectl get instance/user-secret cluster/user-secret -n "$NAMESPACE" -o yaml
+
+    - name: connect-with-the-seeded-credentials
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl wait --for=condition=Ready instance/user-secret -n "$NAMESPACE" --timeout=120s
+              secret="$(kubectl get instance user-secret -n "$NAMESPACE" -o jsonpath='{.status.connectionSecretRef.name}')"
+              get() { kubectl get secret "$secret" -n "$NAMESPACE" -o jsonpath="{.data.$1}" | base64 -d; }
+              test "$(get username)" = app
+              test "$(get password)" = Seeded-By-User-1
+              test "$(get secretName)" = user-secret-credentials
+              # CloudNativePG generates no owner Secret of its own.
+              ! kubectl get secret user-secret-app -n "$NAMESPACE" >/dev/null 2>&1
+              test "$(kubectl exec -n "$NAMESPACE" user-secret-1 -c postgres -- env PGPASSWORD=Seeded-By-User-1 \
+                psql "host=user-secret-rw user=app dbname=app sslmode=require" -tAc 'SELECT current_user')" = app
+      catch:
+        - script:
+            content: kubectl get instance/user-secret -n "$NAMESPACE" -o yaml
+
+    - name: reject-a-username-that-isnt-the-owner
+      try:
+        - apply:
+            file: 10-wrong-username.yaml
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              for _ in $(seq 1 30); do
+                msg="$(kubectl get instance user-secret-wrong -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}')"
+                case "$msg" in *'must be the application database owner "app"'*) break ;; esac
+                sleep 2
+              done
+              echo "Ready: $msg"
+              case "$msg" in *'must be the application database owner "app"'*) ;; *) exit 1 ;; esac
+              ! kubectl get cluster user-secret-wrong -n "$NAMESPACE" >/dev/null 2>&1
+      catch:
+        - script:
+            content: kubectl get instance/user-secret-wrong -n "$NAMESPACE" -o yaml
