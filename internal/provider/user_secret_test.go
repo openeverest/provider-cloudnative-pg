@@ -149,6 +149,14 @@ func TestValidateUserSecret(t *testing.T) {
 			want:    `owner "shop"`,
 		},
 		{
+			name: "owner defaults to the database",
+			custom: components.CNPGCustomSpec{Bootstrap: &components.BootstrapConfiguration{
+				InitDB: &cnpgv1.BootstrapInitDB{Database: "shop"},
+			}},
+			objects: []client.Object{credentialSecret("creds", "app", "pw", "")},
+			want:    `owner "shop"`,
+		},
+		{
 			name:    "not checked once the cluster exists",
 			objects: []client.Object{credentialSecret("creds", "alice", "pw", ""), clusterWithInitDB(initDBSecret("creds"))},
 		},
