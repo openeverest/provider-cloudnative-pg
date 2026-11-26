@@ -38,8 +38,8 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 		return controller.ValidationResult{Errors: field.ErrorList{field.Required(enginePath, "")}}
 	}
 
-	var errs field.ErrorList
-	errs = append(errs, invalid(enginePath, cnpg.ValidateEngine(engine))...)
+	errs := cnpg.ValidateName(instance.Name)
+	errs = append(errs, cnpg.ValidateEngine(enginePath, engine)...)
 	errs = append(errs, invalid(field.NewPath("spec", "backup", "storages"), barman.ValidateSchedules(instance.Spec.Backup))...)
 	errs = append(errs, invalid(field.NewPath("spec", "dataSource"), barman.ValidateDataSource(instance.Spec.DataSource))...)
 	errs = append(errs, invalid(componentsPath.Key(common.ComponentProxy), validateProxy(instance))...)
@@ -51,7 +51,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	if err != nil {
 		return controller.ValidationResult{Errors: append(errs, field.Invalid(engineParams, field.OmitValueType{}, err.Error()))}
 	}
-	errs = append(errs, invalid(engineParams, cnpg.ValidateCustomSpec(&custom))...)
+	errs = append(errs, cnpg.ValidateCustomSpec(engineParams, &custom)...)
 	errs = append(errs, invalid(engineParams.Child("postgresql", "synchronous"), cnpg.ValidateSynchronous(engine, &custom))...)
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
@@ -61,9 +61,26 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
 	warnings := monitoringWarnings(instance, &custom)
+	minimums := cnpg.ValidateEngineMinimums(enginePath, engine)
+	if in.Old == nil && instance.Status.ObservedGeneration > 0 {
+		// A reconciled Instance written before the minimums keeps syncing.
+		// At admission, a minimum the stored Instance misses doesn't block an update.
+		for _, err := range minimums {
+			warnings = append(warnings, err.Error())
+		}
+	} else {
+		errs = append(errs, minimums...)
+	}
+
 	if in.Old != nil {
-		old, err := engineCustomSpec(in.Old.Spec.Components[common.ComponentEngine])
+		oldEngine := in.Old.Spec.Components[common.ComponentEngine]
+		versionErrs, versionWarnings := cnpg.ValidateMajorVersionChange(versionPath(instance), postgresVersion(in.Old), postgresVersion(instance))
+		errs = append(errs, versionErrs...)
+		warnings = append(warnings, versionWarnings...)
+		warnings = append(warnings, cnpg.BackupChangeWarnings(in.Old.Spec.Backup, instance.Spec.Backup)...)
+		old, err := engineCustomSpec(oldEngine)
 		if err == nil {
+			errs = append(errs, cnpg.ValidateStorageChanges(enginePath, engineParams, oldEngine, engine, &old, &custom)...)
 			errs = append(errs, cnpg.ValidateExtensionChanges(&old, &custom, engineParams.Child("extensions"))...)
 			warnings = append(warnings, cnpg.ExtensionRestartWarnings(&old, &custom, engineParams.Child("extensions"))...)
 			if old.PriorityClassName != custom.PriorityClassName {
@@ -147,6 +164,25 @@ func engineCustomSpec(engine corev1alpha1.ComponentSpec) (components.CNPGCustomS
 		return custom, fmt.Errorf("decode the engine parameters: %w", err)
 	}
 	return custom, nil
+}
+
+// postgresVersion is the PostgreSQL release the Instance asks for: the engine
+// version, else the version bundle, else the bundle the runtime applied.
+func postgresVersion(in *corev1alpha1.Instance) string {
+	for _, v := range []string{in.Spec.Components[common.ComponentEngine].Version, in.Spec.Version, in.Status.Version} {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// versionPath is the field that sets the PostgreSQL release.
+func versionPath(in *corev1alpha1.Instance) *field.Path {
+	if in.Spec.Components[common.ComponentEngine].Version != "" {
+		return enginePath.Child("version")
+	}
+	return field.NewPath("spec", "version")
 }
 
 // invalid reports err, if any, as an invalid value of the field at path.

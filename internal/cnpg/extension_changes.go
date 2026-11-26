@@ -40,7 +40,7 @@ func ValidateExtensionChanges(old, updated *components.CNPGCustomSpec, path *fie
 			if slices.ContainsFunc(enabled, func(e extension) bool { return e.sqlExtension == ext.sqlExtension }) {
 				continue
 			}
-			errs = append(errs, field.Forbidden(enabledPath, "cannot be disabled once enabled"))
+			errs = append(errs, field.Forbidden(enabledPath, Destructive+"cannot be disabled once enabled"))
 		case !was && is && ext.creationOnly():
 			errs = append(errs, field.Forbidden(enabledPath, "can only be enabled when the instance is created"))
 		}

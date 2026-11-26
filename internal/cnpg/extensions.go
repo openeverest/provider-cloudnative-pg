@@ -632,7 +632,7 @@ func ValidateExtensionsNotDisabled(c *controller.Context, custom *components.CNP
 			continue
 		}
 		if slices.ContainsFunc(db.Spec.Extensions, func(e cnpgv1.ExtensionSpec) bool { return e.Name == ext.sqlExtension }) {
-			return fmt.Errorf("extensions.%s cannot be disabled once enabled", ext.field)
+			return fmt.Errorf("%sextensions.%s cannot be disabled once enabled", Destructive, ext.field)
 		}
 	}
 	return nil

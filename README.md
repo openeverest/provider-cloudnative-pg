@@ -360,13 +360,13 @@ spec:
 
 `walStorage` uses CNPG's native storage configuration, including optional
 `pvcTemplate`. Omit it to keep WAL on the data volume. Each PostgreSQL instance
-gets its own WAL PVC. Set a positive `size` (or a `pvcTemplate` storage request,
+gets its own WAL PVC. Set a `size` of at least `1Gi` (or a `pvcTemplate` storage request,
 as CNPG allows); omit `storageClass` to use the default StorageClass. The
 data-volume storage class is not inherited.
 
 CNPG manages provisioning, migration when adding a WAL volume, and expansion.
-Once configured, WAL storage cannot be removed. CNPG validates updates and
-rejects shrinking volumes; expansion requires a StorageClass/CSI driver that
+Once configured, WAL storage cannot be removed, shrunk or moved to another
+`storageClass`; the provider rejects these updates at admission. Expansion requires a StorageClass/CSI driver that
 supports it (`allowVolumeExpansion: true`). Adding a volume to an existing
 cluster can restart instances; follow CNPG's storage lifecycle guidance.
 This setting provisions storage, not a WAL disk-usage alert or monitoring policy.
@@ -473,7 +473,9 @@ spec:
 Component names are defined by this provider — see [definition/provider.yaml](definition/provider.yaml).
 `spec.version` and `spec.topology` are optional; the provider defaults apply.
 CPU and memory requests and limits are required, CPU at most millicore precision, and a request
-above its limit is rejected. The UI takes CPU in cores, fractions included (`0.5`), PostgreSQL
+above its limit is rejected. The engine needs at least `100m` CPU, `256Mi` memory and `1Gi` of
+storage (data and WAL volumes), and the Instance name must be a DNS-1035 label of at most 50
+characters, the CloudNativePG `Cluster` limit. The UI takes CPU in cores, fractions included (`0.5`), PostgreSQL
 memory and the disks in Gi, and PgBouncer memory in Mi, and writes them as quantity strings; a
 value it did not change keeps its stored form (for example `3584Mi`).
 More examples live in [examples/](examples/), including
@@ -801,11 +803,22 @@ The Instance "orders" is invalid: spec.components[engine].parameters.postgresql.
 ```
 
 - **Checked at admission:** the published parameter schemas, the version catalog and the
-  provider's rules (resources, synchronous replication, extensions and the PostgreSQL version
-  they need, scheduling, proxy, backup schedules and retention, the data source). The deprecated
+  provider's rules (the name, resources and their minimums, synchronous replication, extensions
+  and the PostgreSQL version they need, scheduling, proxy, backup schedules and retention, the
+  data source). Every problem is reported at once, each at its field. The deprecated
   monitoring parameters are accepted with a warning; see [Monitoring](#monitoring).
   Rules about changes are checked against the stored `Instance`: an extension created in the
-  database cannot be turned off, and creation-only extensions cannot be turned on later.
+  database cannot be turned off, creation-only extensions cannot be turned on later, the data
+  and WAL volumes cannot shrink or change `storageClass`, WAL storage cannot be removed, and
+  PostgreSQL cannot go back to an older major, or upgrade to a major below 16.
+- **Destructive changes** (losing data or impossible to undo) start their detail with
+  `destructive change:`, so tooling can tell them from invalid values. Rejected ones are
+  `Forbidden` errors (shrinking a volume, removing WAL storage, turning off an extension created
+  in the database); admitted ones are warnings (a PostgreSQL major upgrade, turning backups off):
+  `Warning: spec.version: destructive change: upgrading PostgreSQL from major 17 to 18 cannot be undone: ...`.
+- **Minimums on existing Instances:** an `Instance` the provider already reconciled keeps syncing
+  below the minimums, with a warning Event, and stays editable: like every error the stored
+  `Instance` already has, a minimum it already misses does not block an update.
 - **Warnings:** changes that restart the instances, such as turning on an image-volume or
   preloaded extension or changing `priorityClassName`, are admitted with a warning, which
   `kubectl` prints:

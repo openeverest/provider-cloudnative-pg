@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
@@ -168,7 +169,7 @@ func TestValidateCustomSpecPgHBA(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateCustomSpec(&tt.custom)
+			err := ValidateCustomSpec(field.NewPath("parameters"), &tt.custom).ToAggregate()
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("ValidateCustomSpec() error = %v", err)

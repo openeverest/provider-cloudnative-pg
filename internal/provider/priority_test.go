@@ -25,14 +25,14 @@ func TestPriorityClassName(t *testing.T) {
 		t.Fatalf("unset priority class must keep the cluster default, got %q", got)
 	}
 	custom := components.CNPGCustomSpec{PriorityClassName: "database-critical"}
-	if err := cnpg.ValidateCustomSpec(&custom); err != nil {
+	if err := cnpg.ValidateCustomSpec(engineParams, &custom).ToAggregate(); err != nil {
 		t.Fatal(err)
 	}
 	if got := buildClusterSpec(engine, custom).PriorityClassName; got != "database-critical" {
 		t.Fatalf("PriorityClassName = %q, want database-critical", got)
 	}
 	for _, name := range []string{"Database", "has space", "-leading-dash", "under_score"} {
-		if err := cnpg.ValidateCustomSpec(&components.CNPGCustomSpec{PriorityClassName: name}); err == nil {
+		if err := cnpg.ValidateCustomSpec(engineParams, &components.CNPGCustomSpec{PriorityClassName: name}).ToAggregate(); err == nil {
 			t.Errorf("priorityClassName %q must be rejected", name)
 		}
 	}

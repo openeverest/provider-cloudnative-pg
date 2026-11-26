@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/openeverest/provider-cloudnative-pg/definition/components"
 
@@ -18,31 +19,53 @@ import (
 // Matches the topology.yaml bootstrap database/owner regex.
 var postgresIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-func ValidateCustomSpec(custom *components.CNPGCustomSpec) error {
+var dns1035Label = regexp.MustCompile(`^[a-z]([-a-z0-9]*[a-z0-9])?$`)
+
+// MaxNameLength is the longest Instance name CloudNativePG accepts for a
+// Cluster.
+const MaxNameLength = 50
+
+// The smallest engine resources PostgreSQL runs with. Storage applies to the
+// data and the WAL volume: CloudNativePG's default max_wal_size is 1GB.
+var (
+	MinStorage = resource.MustParse("1Gi")
+	MinCPU     = resource.MustParse("100m")
+	MinMemory  = resource.MustParse("256Mi")
+)
+
+var minStorageDetail = "must be at least " + MinStorage.String() + ": CloudNativePG lets WAL grow to max_wal_size, 1GB by default"
+
+// ValidateCustomSpec checks the engine parameters, reporting every problem at
+// its field under path, the engine's parameters.
+func ValidateCustomSpec(path *field.Path, custom *components.CNPGCustomSpec) field.ErrorList {
+	var errs field.ErrorList
 	if custom.PriorityClassName != "" {
-		if errs := validation.IsDNS1123Subdomain(custom.PriorityClassName); len(errs) > 0 {
-			return fmt.Errorf("priorityClassName %q is invalid: %s", custom.PriorityClassName, strings.Join(errs, "; "))
+		if msgs := validation.IsDNS1123Subdomain(custom.PriorityClassName); len(msgs) > 0 {
+			errs = append(errs, field.Invalid(path.Child("priorityClassName"), custom.PriorityClassName, strings.Join(msgs, "; ")))
 		}
 	}
 	if custom.WALStorage != nil {
-		if size := custom.WALStorage.GetSizeOrNil(); size == nil || size.Sign() <= 0 {
-			return fmt.Errorf("walStorage requires a valid positive size or pvcTemplate storage request")
+		walPath := path.Child("walStorage")
+		switch size := custom.WALStorage.GetSizeOrNil(); {
+		case size == nil || size.Sign() <= 0:
+			errs = append(errs, field.Required(walPath.Child("size"), "walStorage requires a valid positive size or pvcTemplate storage request"))
+		case size.Cmp(MinStorage) < 0:
+			errs = append(errs, field.Invalid(walPath.Child("size"), size.String(), minStorageDetail))
 		}
 	}
 	if custom.Bootstrap != nil {
 		if err := ValidateBootstrap(custom.Bootstrap); err != nil {
-			return err
+			errs = append(errs, field.Invalid(path.Child("bootstrap", "initdb"), field.OmitValueType{}, err.Error()))
 		}
 	}
 	if strings.TrimSpace(custom.PgHBA) != "" {
 		if custom.PostgresConfiguration != nil && len(custom.PostgresConfiguration.PgHBA) > 0 {
-			return fmt.Errorf("pgHBA cannot be combined with postgresql.pg_hba; move the rules to pgHBA")
-		}
-		if _, err := ParsePgHBA(custom.PgHBA); err != nil {
-			return err
+			errs = append(errs, field.Invalid(path.Child("pgHBA"), field.OmitValueType{}, "pgHBA cannot be combined with postgresql.pg_hba; move the rules to pgHBA"))
+		} else if _, err := ParsePgHBA(custom.PgHBA); err != nil {
+			errs = append(errs, field.Invalid(path.Child("pgHBA"), field.OmitValueType{}, err.Error()))
 		}
 	}
-	return nil
+	return errs
 }
 
 func ValidateBootstrap(bootstrap *components.BootstrapConfiguration) error {
@@ -67,20 +90,77 @@ func ValidateBootstrap(bootstrap *components.BootstrapConfiguration) error {
 	return nil
 }
 
-func ValidateEngine(engine corev1alpha1.ComponentSpec) error {
-	if engine.Replicas == nil {
-		return fmt.Errorf("replicas is required")
+// ValidateName checks the Instance name, which names the CloudNativePG Cluster
+// and everything derived from it: the Services <name>-rw, -ro and -r, the
+// Secrets <name>-superuser and <name>-app, the pods <name>-<n>, the Poolers
+// <name>-pooler and -pooler-ro, and the operator's Jobs.
+func ValidateName(name string) field.ErrorList {
+	path := field.NewPath("metadata", "name")
+	var errs field.ErrorList
+	if len(name) > MaxNameLength {
+		errs = append(errs, &field.Error{
+			Type: field.ErrorTypeTooLong, Field: path.String(), BadValue: name,
+			Detail: fmt.Sprintf("must be at most %d characters: CloudNativePG derives Service, Secret, pod and Job names from it (<name>-rw, <name>-superuser, <name>-1, ...)",
+				MaxNameLength),
+		})
 	}
-	if int(*engine.Replicas) < 1 {
-		return fmt.Errorf("replicas must be at least 1")
+	if !dns1035Label.MatchString(name) {
+		errs = append(errs, field.Invalid(path, name,
+			"must be a DNS-1035 label (lowercase letters, digits and '-', starting with a letter and ending with a letter or digit), as CloudNativePG Service names are"))
+	}
+	return errs
+}
+
+// ValidateEngine checks the engine component's replicas, storage and
+// resources, reporting every problem at its field under path, the engine.
+func ValidateEngine(path *field.Path, engine corev1alpha1.ComponentSpec) field.ErrorList {
+	var errs field.ErrorList
+	switch {
+	case engine.Replicas == nil:
+		errs = append(errs, field.Required(path.Child("replicas"), ""))
+	case *engine.Replicas < 1:
+		errs = append(errs, field.Invalid(path.Child("replicas"), *engine.Replicas, "must be at least 1"))
 	}
 	if engine.Storage == nil || engine.Storage.Size.Sign() <= 0 {
-		return fmt.Errorf("storage size is required")
+		errs = append(errs, field.Required(path.Child("storage", "size"), "storage size is required"))
 	}
 	if engine.Resources == nil {
-		return fmt.Errorf("resources are required")
+		return append(errs, field.Required(path.Child("resources"), "CPU and memory requests and limits are required"))
 	}
-	return ValidateResources(engine.Resources)
+	return append(errs, resourceErrors(path.Child("resources"), engine.Resources)...)
+}
+
+// ValidateEngineMinimums reports the engine's storage size, CPU and memory
+// set below what PostgreSQL needs to run, at their fields under path, the
+// engine. ValidateEngine reports missing ones.
+func ValidateEngineMinimums(path *field.Path, engine corev1alpha1.ComponentSpec) field.ErrorList {
+	var errs field.ErrorList
+	if engine.Storage != nil && engine.Storage.Size.Sign() > 0 && engine.Storage.Size.Cmp(MinStorage) < 0 {
+		errs = append(errs, field.Invalid(path.Child("storage", "size"), engine.Storage.Size.String(), minStorageDetail))
+	}
+	if engine.Resources == nil {
+		return errs
+	}
+	for _, list := range []struct {
+		name      string
+		resources corev1.ResourceList
+	}{{"requests", engine.Resources.Requests}, {"limits", engine.Resources.Limits}} {
+		for _, m := range []struct {
+			name   corev1.ResourceName
+			min    resource.Quantity
+			detail string
+		}{
+			{corev1.ResourceCPU, MinCPU, "must be at least " + MinCPU.String()},
+			{corev1.ResourceMemory, MinMemory, "must be at least " + MinMemory.String() +
+				": PostgreSQL's default shared_buffers (128MB) and the CloudNativePG instance manager must fit"},
+		} {
+			value, ok := list.resources[m.name]
+			if ok && value.Sign() > 0 && value.Cmp(m.min) < 0 {
+				errs = append(errs, field.Invalid(path.Child("resources", list.name).Key(string(m.name)), value.String(), m.detail))
+			}
+		}
+	}
+	return errs
 }
 
 // ValidateResources checks required CPU and memory requests/limits, CPU
@@ -89,43 +169,55 @@ func ValidateResources(resources *corev1.ResourceRequirements) error {
 	if resources == nil {
 		return fmt.Errorf("resources are required")
 	}
-	if resources.Requests.Cpu().IsZero() || resources.Requests.Memory().IsZero() {
-		return fmt.Errorf("both CPU and memory requests are required")
-	}
-	if resources.Limits.Cpu().IsZero() || resources.Limits.Memory().IsZero() {
-		return fmt.Errorf("both CPU and memory limits are required")
-	}
-	if err := validateCPU(corev1.ResourceRequestsCPU, *resources.Requests.Cpu()); err != nil {
-		return err
-	}
-	if err := validateCPU(corev1.ResourceLimitsCPU, *resources.Limits.Cpu()); err != nil {
-		return err
-	}
-	if resources.Requests.Cpu().Cmp(*resources.Limits.Cpu()) > 0 {
-		return fmt.Errorf("CPU request %s is greater than limit %s",
-			resources.Requests.Cpu().String(),
-			resources.Limits.Cpu().String())
-	}
-	if resources.Requests.Memory().Cmp(*resources.Limits.Memory()) > 0 {
-		return fmt.Errorf("memory request %s is greater than limit %s",
-			resources.Requests.Memory().String(),
-			resources.Limits.Memory().String())
-	}
-	return nil
+	return resourceErrors(field.NewPath("resources"), resources).ToAggregate()
 }
 
-// validateCPU applies the UI's CPU rule (positive, at most millicore precision)
+// resourceErrors reports every problem ValidateResources checks for, at its
+// field under path, the resources.
+func resourceErrors(path *field.Path, resources *corev1.ResourceRequirements) field.ErrorList {
+	var errs field.ErrorList
+	for _, list := range []struct {
+		name      string
+		resources corev1.ResourceList
+	}{{"requests", resources.Requests}, {"limits", resources.Limits}} {
+		for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			value, ok := list.resources[name]
+			p := path.Child(list.name).Key(string(name))
+			switch {
+			case !ok || value.IsZero():
+				errs = append(errs, field.Required(p, "both CPU and memory "+list.name+" are required"))
+			case name == corev1.ResourceCPU:
+				if detail := cpuProblem(value); detail != "" {
+					errs = append(errs, field.Invalid(p, value.String(), detail))
+				}
+			}
+		}
+	}
+	if errs != nil {
+		return errs
+	}
+	if resources.Requests.Cpu().Cmp(*resources.Limits.Cpu()) > 0 {
+		errs = append(errs, field.Invalid(path.Child("requests").Key(string(corev1.ResourceCPU)), resources.Requests.Cpu().String(),
+			fmt.Sprintf("CPU request %s is greater than limit %s", resources.Requests.Cpu().String(), resources.Limits.Cpu().String())))
+	}
+	if resources.Requests.Memory().Cmp(*resources.Limits.Memory()) > 0 {
+		errs = append(errs, field.Invalid(path.Child("requests").Key(string(corev1.ResourceMemory)), resources.Requests.Memory().String(),
+			fmt.Sprintf("memory request %s is greater than limit %s", resources.Requests.Memory().String(), resources.Limits.Memory().String())))
+	}
+	return errs
+}
+
+// cpuProblem applies the UI's CPU rule (positive, at most millicore precision)
 // to the parsed quantity. The API server stores quantities canonically (0.5 as
 // 500m, 1000 as 1k), so the UI regex cannot be matched against the string here.
-func validateCPU(name corev1.ResourceName, cpu resource.Quantity) error {
+func cpuProblem(cpu resource.Quantity) string {
 	if cpu.Sign() <= 0 {
-		return fmt.Errorf("%s %s must be greater than zero", name, cpu.String())
+		return fmt.Sprintf("CPU %s must be greater than zero", cpu.String())
 	}
 	if resource.NewMilliQuantity(cpu.MilliValue(), resource.DecimalSI).Cmp(cpu) != 0 {
-		return fmt.Errorf("%s %s is finer than a millicore; use cores (e.g. 0.5, 2) or millicores (e.g. 500m)",
-			name, cpu.String())
+		return fmt.Sprintf("CPU %s is finer than a millicore; use cores (e.g. 0.5, 2) or millicores (e.g. 500m)", cpu.String())
 	}
-	return nil
+	return ""
 }
 
 // ValidateScheduling rejects placing pods through both parameters.affinity and
