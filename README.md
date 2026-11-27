@@ -51,6 +51,11 @@ manages pods directly — all lifecycle work is delegated to the operator.
 | `0.4.x` | `2.0.0-alpha.1` | `1.30.x` | `1.34` – `1.36` |
 | `main` | `2.0.0-alpha.1` (Instance status as conditions, openeverest/openeverest#3652) | `1.30.x` | `1.34` – `1.36` |
 
+Each chart also names the OpenEverest it is built for, in the `openeverest.io/contract-version`
+annotation of its `Chart.yaml`, which `make generate` writes. A Helm install on an OpenEverest
+that does not serve that version fails, and a build applied any other way waits, unready, until
+OpenEverest serves it; see [Installation](#installation).
+
 ## Capabilities
 
 What you can do to a running instance through the `Instance` API. Upgrading the
@@ -404,6 +409,27 @@ helm install provider-cloudnative-pg \
 > installing this chart. Without the plugin (or its `ObjectStore` CRD), Instances report
 > `BackupConfigured=False` with reason `BarmanPluginMissing`, and new Backups fail with that
 > message instead of an opaque operator error.
+
+With Helm or Flux, the install fails, before anything is applied, when the OpenEverest in the
+cluster does not serve the OpenEverest the chart is built for, and the error names the
+OpenEverest it needs. Argo CD, and any tool that applies pre-rendered manifests, renders the
+chart without reading the cluster, so that check passes there. Whichever tool applies it, a new
+build of the provider that the installed OpenEverest does not support stays running but unready
+until OpenEverest does, with a Warning Event on the `Provider` that says why (see
+[Troubleshooting](#troubleshooting)). Under the default `RollingUpdate` strategy, the previous
+build, if any, keeps serving meanwhile.
+
+To install anyway, set `compatibility.acknowledge.coreVersion` to the OpenEverest version the
+cluster runs, which the error also names. The chart writes it on the `Provider`, its
+`BackupClass` and the presets as `openeverest.io/compatibility-acknowledged`, and the provider
+reads it on its `Provider` at startup, so it lets a held build start too. It holds on that
+release and on later ones that keep its contract, such as its patch releases, and expires with
+the first OpenEverest release that changes the contract, which is checked again.
+
+The chart sets no annotation for any tool itself: `openeverest.annotations` adds annotations to
+the `Provider`, its `BackupClass` and the presets, such as `argocd.argoproj.io/sync-wave: "-1"`
+to have Argo CD apply them before the provider's `Deployment` and the bundled CloudNativePG
+operator.
 
 Upgrade and uninstall:
 
@@ -1273,7 +1299,7 @@ local k3d setup, running against a cluster you already have, and every `dev/.env
 
 ```bash
 make dev-up             # local cluster + Tilt dev environment (see dev/README.md)
-make generate           # RBAC, provider spec, Helm chart sync
+make generate           # RBAC, provider spec, Helm chart sync, OpenEverest stamp
 make run                # run the provider locally against the cluster (without the admission webhook)
 make test               # unit tests
 make test-integration   # chainsaw suites under test/integration/
@@ -1289,8 +1315,9 @@ cp dev/.env.example dev/.env   # set K8S_CONTEXT, and DOCKER_REGISTRY_URL for a 
 tilt up -f dev/Tiltfile
 ```
 
-`make help` lists every target. `make verify` fails when generated files are stale — run
-`make generate` and commit the result.
+`make help` lists every target. `make verify` fails when generated files are stale or the chart
+is not stamped with the OpenEverest the provider is built against — run `make generate` and
+commit the result.
 
 The provider contract (`Validate` / `Sync` / `Status` / `Cleanup`), RBAC markers, watches,
 code generation, and the backup/restore interfaces are documented once for all providers in
@@ -1305,7 +1332,7 @@ code generation, and the backup/restore interfaces are documented once for all p
 | `internal/cnpg/` | CloudNativePG helpers — TimescaleDB, roles; `barman/` for backup, restore, and schedules |
 | `internal/common/` | Component name constants |
 | `definition/` | Provider identity, component types, versions, topologies, backup classes |
-| `charts/provider-cloudnative-pg/` | Helm chart (`generated/` is produced by `make generate`) |
+| `charts/provider-cloudnative-pg/` | Helm chart (`generated/`, the `Chart.yaml` stamp, `templates/_openeverest_contract.tpl` and `templates/openeverest-compat-check.yaml` are produced by `make generate`) |
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
 | `docs/reference.md` | Generated parameter reference — do not edit; document fields with doc comments in `definition/` |
 | `hack/reference-docs/` | Generator of `docs/reference.md` (run by `make generate`) |
@@ -1383,6 +1410,7 @@ kubectl logs -n everest-system deploy/provider-cloudnative-pg -f
 | `Instance` stuck in `Creating` | `kubectl describe instance <name>` conditions, then the provider logs |
 | No `Provider` resource in the cluster | Is the chart installed? Check the provider deployment logs |
 | `Instance` ignored entirely | `spec.providerRef.name` must be `provider-cloudnative-pg` |
+| New provider pod running but never `Ready` | It waits until the installed OpenEverest supports this build: the Warning Event in `kubectl describe provider provider-cloudnative-pg` says why |
 | `Cluster` created but not reconciled | Confirm CloudNativePG is running; for Barman, confirm cert-manager is installed |
 | `Cluster` created but no pods | Inspect the CloudNativePG `Cluster` status — the failure is upstream in the operator |
 | `BackupConfigured=False` / reason `BarmanPluginMissing` | Install cert-manager, then install/upgrade with `plugin-barman-cloud.enabled=true` (the chart default) |
