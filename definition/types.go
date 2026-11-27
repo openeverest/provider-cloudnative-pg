@@ -46,14 +46,28 @@ type TLSParameters struct {
 	CertificateSecretName string `json:"certificateSecretName,omitempty"`
 
 	// InternalCertificateSecretName names a Secret in the instance namespace
-	// with the client certificate replicas authenticate to the primary with,
-	// in the same format: issued to the streaming_replica user (common name)
-	// for client authentication, and signed by the CA in its ca.crt. Without
-	// it CloudNativePG issues the replication certificate. Cannot be combined
-	// with the proxy component, whose client certificate CloudNativePG issues
-	// with the private key of that CA.
+	// with the client certificate replicas authenticate to the primary with
+	// (tls.crt, tls.key), issued to the streaming_replica user (common name)
+	// for client authentication. Without clientCASecretName it is also the
+	// client CA (ca.crt): PostgreSQL verifies the certificate against that
+	// ca.crt. With clientCASecretName, PostgreSQL verifies it against that
+	// Secret's ca.crt instead. Without it CloudNativePG issues the
+	// replication certificate. Cannot be combined with the proxy component
+	// unless clientCASecretName is also set (and that Secret holds ca.key),
+	// because PgBouncer's client certificate is issued with that CA key.
 	// +optional
 	InternalCertificateSecretName string `json:"internalCertificateSecretName,omitempty"`
+
+	// ClientCASecretName names a Secret in the instance namespace whose ca.crt
+	// PostgreSQL trusts for client certificates (ssl_ca_file): application
+	// clients using method cert in pgHBA, and the replication certificate.
+	// Without internalCertificateSecretName the Secret must also hold ca.key
+	// so CloudNativePG can sign the streaming_replica certificate. With both,
+	// bring a replication certificate signed by that CA; ca.key is then
+	// optional unless the proxy component is used. Cannot name a Secret
+	// CloudNativePG would overwrite (<instance>-ca, -server, -replication).
+	// +optional
+	ClientCASecretName string `json:"clientCASecretName,omitempty"`
 
 	// Issuer is the cert-manager issuer that signs the server certificate,
 	// instead of the CA CloudNativePG creates. The provider requests it as

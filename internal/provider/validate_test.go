@@ -153,6 +153,13 @@ func TestValidate(t *testing.T) {
 			},
 			want: []string{"spec.parameters.tls.internalCertificateSecretName"},
 		},
+		{
+			name: "replication certificate with a proxy and a client CA",
+			mutate: func(in *corev1alpha1.Instance) {
+				in.Spec.Parameters = &runtime.RawExtension{Raw: []byte(`{"tls":{"clientCASecretName":"client-ca","internalCertificateSecretName":"repl"}}`)}
+				in.Spec.Components[common.ComponentProxy] = corev1alpha1.ComponentSpec{Replicas: new(int32(1))}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -403,6 +410,7 @@ func TestValidateTLSUpdate(t *testing.T) {
 	}{
 		{name: "mode", old: `{"tls":{"issuer":{"name":"acme"}}}`, updated: `{"tls":{"mode":"requireTLS","issuer":{"name":"acme"}}}`},
 		{name: "issuer", old: `{"tls":{"issuer":{"name":"acme"}}}`, updated: `{"tls":{"issuer":{"name":"other"}}}`, want: []string{"spec.parameters.tls"}},
+		{name: "client CA", old: `{"tls":{"clientCASecretName":"client-ca"}}`, updated: `{"tls":{"clientCASecretName":"other-ca"}}`, want: []string{"spec.parameters.tls"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

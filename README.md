@@ -70,6 +70,7 @@ provider itself is covered under [Installation](#installation).
 | Logical replication slot failover | ✅ | `parameters.replicationSlots.highAvailability.synchronizeLogicalDecoding` (PostgreSQL 17+); see [Logical replication slot failover](#logical-replication-slot-failover) |
 | TLS-only connections | ✅ | `spec.parameters.tls.mode: requireTLS` rejects unencrypted client connections; see [Require TLS](#require-tls) |
 | Bring your own CA | ✅ | `spec.parameters.tls`: the server certificate from a cert-manager issuer or a Secret, the replication certificate from a Secret; see [Bring your own CA](#bring-your-own-ca) |
+| Client certificate (mTLS) | ✅ | `spec.parameters.tls.clientCASecretName` trusts an external client CA; combine with `pgHBA` method `cert`; see [Client certificate authentication](#client-certificate-authentication) |
 | Client access rules (pg_hba) | ✅ | `parameters.pgHBA` declares which clients may connect to which databases as which users; see [Client access rules](#client-access-rules-pg_hba) |
 | Connection pooling | ✅ | optional `proxy` component → CloudNativePG `Pooler` (PgBouncer, type `rw`); `parameters.readOnly` also creates a type `ro` Pooler; see [Connection pooling](#connection-pooling) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy` (all fields), or `parameters.affinity` — not both |
@@ -846,7 +847,7 @@ The technology-specific knobs worth knowing about:
 | `managed` | `engine` | Managed PostgreSQL roles |
 | `resizeInUseVolumes` | `engine` | Allow PVC expansion on running instances |
 | `priorityClassName` | `engine` | Kubernetes PriorityClass of the instance pods |
-| `tls` | instance (`spec.parameters`) | TLS mode, certificates and issuer; see [Require TLS](#require-tls) and [Bring your own CA](#bring-your-own-ca) |
+| `tls` | instance (`spec.parameters`) | TLS mode, certificates and issuer; see [Require TLS](#require-tls), [Bring your own CA](#bring-your-own-ca) and [Client certificate authentication](#client-certificate-authentication) |
 | `replicationSlots` | `engine` | CloudNativePG `ReplicationSlotsConfiguration` (HA slots, user slot synchronization, logical slot failover); see [Logical replication slot failover](#logical-replication-slot-failover) |
 | `pgHBA` | `engine` | `pg_hba.conf` records, one per line; see [Client access rules](#client-access-rules-pg_hba) |
 | `monitoring` | `engine` | CloudNativePG monitoring configuration (custom queries, metrics TLS, …); `enablePodMonitor` is ignored, see [Monitoring](#monitoring) |
@@ -1122,14 +1123,15 @@ since it carries its own names. The instance waits until the Secret exists.
 The provider labels it `cnpg.io/reload`, so a renewed certificate written to
 it is loaded without a restart.
 
-`tls.internalCertificateSecretName` is optional: a Secret in the same format
-with the client certificate replicas authenticate to the primary with, issued
-to `streaming_replica` (common name) for client authentication and signed by
-the CA in its `ca.crt`, which the primary checks it against. Without it
-CloudNativePG issues the replication certificate. It can't be combined with
-the [`proxy` component](#connection-pooling): CloudNativePG issues PgBouncer's
-client certificate with the private key of the CA that signs the replication
-certificate, which the Secret doesn't carry.
+`tls.internalCertificateSecretName` is optional: a Secret with the client
+certificate replicas authenticate to the primary with (`tls.crt`, `tls.key`),
+issued to `streaming_replica` (common name) for client authentication. Without
+[`clientCASecretName`](#client-certificate-authentication) it must also hold
+the CA that signs it (`ca.crt`), which the primary checks it against. Without
+it CloudNativePG issues the replication certificate. It can't be combined with
+the [`proxy` component](#connection-pooling) unless `clientCASecretName` is
+also set (and that Secret holds `ca.key`): CloudNativePG issues PgBouncer's
+client certificate with that CA private key.
 
 #### Additional names alone
 
@@ -1152,7 +1154,10 @@ condition instead of applying them:
   clients use, does not trust a chain that ends at an intermediate CA;
 - the server certificate is valid for a name of the `-rw` Service, such as
   `<cluster>-rw.<namespace>.svc`;
-- the replication certificate is issued to `streaming_replica`.
+- the replication certificate is issued to `streaming_replica`, and when
+  `clientCASecretName` is set it chains to that Secret's `ca.crt`;
+- a client CA Secret holds `ca.crt`, and `ca.key` matching it when CloudNativePG
+  must sign the replication certificate (or PgBouncer's).
 
 A Secret named like the ones CloudNativePG writes for the instance
 (`<cluster>-ca`, `<cluster>-server`, `<cluster>-replication`) is refused at
@@ -1172,7 +1177,8 @@ not reconciled, reporting why in its `Ready` condition, until it is updated.
 | `requireTLS: true` | `mode: requireTLS` |
 | `requireTLS: false` or unset | `mode: preferTLS`, or unset |
 | `certificates.serverTLSSecret` and `serverCASecret` | `certificateSecretName`: one Secret with `tls.crt`, `tls.key` and `ca.crt` |
-| `certificates.replicationTLSSecret` and `clientCASecret` | `internalCertificateSecretName`: one Secret with `tls.crt`, `tls.key` and `ca.crt` |
+| `certificates.replicationTLSSecret` and `clientCASecret` (same Secret) | `internalCertificateSecretName`: one Secret with `tls.crt`, `tls.key` and `ca.crt` |
+| `certificates.clientCASecret` (alone, or different from the replication Secret) | `clientCASecretName`; with a separate replication Secret also set `internalCertificateSecretName` |
 | `certificates.serverAltDNSNames` | `additionalNames` |
 
 Moving the same Secrets is not a change of the certificate source, so it is
@@ -1202,6 +1208,66 @@ spec:
     engine:
       parameters: {}
 ```
+
+### Client certificate authentication
+
+CloudNativePG verifies client certificates against one client CA
+(`ssl_ca_file`). By default that is the CA it creates for the instance, so
+application certificates from your company's CA are refused. Set
+`tls.clientCASecretName` to a Secret whose `ca.crt` is the CA you trust for
+clients (and for replication):
+
+```yaml
+spec:
+  parameters:
+    tls:
+      mode: requireTLS
+      clientCASecretName: company-client-ca
+  components:
+    engine:
+      parameters:
+        managed:
+          roles:
+            - name: orders_app
+              ensure: present
+              login: true
+              disablePassword: true
+        pgHBA: |
+          hostssl app orders_app all cert
+          host    app orders_app all reject
+```
+
+[examples/instance-client-cert.yaml](examples/instance-client-cert.yaml) has a
+full Instance. Issue the role a certificate whose common name is the role
+name (`orders_app`), signed by that CA, then connect with it:
+
+```bash
+psql "host=orders-db-rw.ns.svc user=orders_app dbname=app sslmode=verify-full \
+  sslrootcert=company-ca.crt sslcert=orders_app.crt sslkey=orders_app.key"
+```
+
+PostgreSQL maps the certificate's common name to the role. Password login for
+that role is refused when `pgHBA` has no password method for it (and
+`disablePassword: true` removes any password).
+
+CloudNativePG signs the `streaming_replica` certificate with the same client
+CA. How that coexists with your CA:
+
+| You set | Replication | Application client certs |
+|---|---|---|
+| nothing | CloudNativePG's CA | only certificates that CA signs |
+| `clientCASecretName` alone | CloudNativePG signs it with `ca.key` of that Secret (required) | certificates your CA signs |
+| `clientCASecretName` and `internalCertificateSecretName` | your Secret, which must chain to that CA's `ca.crt`; `ca.key` optional | certificates your CA signs |
+| `internalCertificateSecretName` alone | your Secret; its `ca.crt` is also the client CA | certificates that Secret's CA signs |
+
+With the [`proxy` component](#connection-pooling), CloudNativePG also needs
+`ca.key` in the client CA Secret to issue PgBouncer's client certificate. A
+replication certificate Secret alone still can't be combined with the proxy.
+
+The certificate source (`clientCASecretName` included) can only be set when
+the instance is created. Renew `ca.crt` (and `ca.key` when present) in place;
+the provider labels the Secret `cnpg.io/reload` so PostgreSQL loads it without
+a restart.
 
 ### Client access rules (pg_hba)
 

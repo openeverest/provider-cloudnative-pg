@@ -1,0 +1,44 @@
+# Client certificate (mTLS) authentication: PostgreSQL trusts the company
+# client CA, CloudNativePG signs the streaming_replica certificate with its
+# ca.key, and the orders_app role logs in with a client certificate (method
+# cert). See "Client certificate authentication" in the README.
+#
+# Create the client CA Secret first (ca.crt and ca.key), for example from
+# cert-manager:
+#   kubectl create secret generic company-client-ca -n <namespace> \
+#     --from-file=ca.crt=company-client-ca.crt --from-file=ca.key=company-client-ca.key
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: orders-db
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      mode: requireTLS
+      clientCASecretName: company-client-ca
+  components:
+    engine:
+      type: postgresql
+      replicas: 3
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 5Gi
+      parameters:
+        managed:
+          roles:
+            - name: orders_app
+              ensure: present
+              login: true
+              disablePassword: true
+        pgHBA: |
+          # orders_app: client certificate only (common name = role name)
+          hostssl app orders_app all cert
+          host    app orders_app all reject

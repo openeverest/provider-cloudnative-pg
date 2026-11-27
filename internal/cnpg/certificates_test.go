@@ -182,6 +182,34 @@ func TestValidateReplicationCertificate(t *testing.T) {
 	}
 }
 
+func TestValidateReplicationCertificateAgainst(t *testing.T) {
+	root := issue(t, caTemplate("Root CA"), nil, false)
+	other := issue(t, caTemplate("Other CA"), nil, false)
+	replica := issue(t, &x509.Certificate{
+		Subject: pkix.Name{CommonName: "streaming_replica"}, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, &root, false)
+	repl := secret("repl", map[string][]byte{"tls.crt": replica.pem(), "tls.key": replica.pkcs8Key(t)})
+	assertError(t, ValidateReplicationCertificateAgainst(repl, secret("client-ca", map[string][]byte{"ca.crt": root.pem()})), "")
+	assertError(t, ValidateReplicationCertificateAgainst(repl, secret("client-ca", map[string][]byte{"ca.crt": other.pem()})),
+		"is not signed by a CA certificate in ca.crt")
+}
+
+func TestValidateClientCASecret(t *testing.T) {
+	root := issue(t, caTemplate("Root CA"), nil, false)
+	other := issue(t, caTemplate("Other CA"), nil, false)
+	withKey := secret("client-ca", map[string][]byte{"ca.crt": root.pem(), "ca.key": root.pkcs8Key(t)})
+	withoutKey := secret("client-ca", map[string][]byte{"ca.crt": root.pem()})
+	wrongKey := secret("client-ca", map[string][]byte{"ca.crt": root.pem(), "ca.key": other.pkcs8Key(t)})
+
+	assertError(t, ValidateClientCASecret(withKey, false), "")
+	assertError(t, ValidateClientCASecret(withoutKey, false), "")
+	assertError(t, ValidateClientCASecret(withKey, true), "")
+	assertError(t, ValidateClientCASecret(withoutKey, true), "needs the CA private key in ca.key")
+	assertError(t, ValidateClientCASecret(wrongKey, true), "are not a CA certificate and its private key")
+	assertError(t, ValidateClientCASecret(secret("client-ca", nil), false), "no PEM certificate")
+}
+
 func assertError(t *testing.T, err error, want string) {
 	t.Helper()
 	if want == "" {

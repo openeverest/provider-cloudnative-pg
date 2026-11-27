@@ -20,6 +20,7 @@ const (
 	tlsCertificateKey = "tls.crt"
 	tlsPrivateKeyKey  = "tls.key"
 	caCertificateKey  = "ca.crt"
+	caPrivateKeyKey   = "ca.key"
 )
 
 // cnpgCertificateSecretSuffixes end the names of the Secrets CloudNativePG
@@ -45,17 +46,48 @@ func ValidateServerCertificate(server, ca *corev1.Secret, hosts []string) error 
 }
 
 // ValidateReplicationCertificate checks the replication certificate in
-// secret the way CloudNativePG and PostgreSQL use it: replicas present tls.crt
-// and tls.key as the streaming_replica user, and the primary verifies the
-// certificate against ca.crt of the same Secret.
+// secret the way CloudNativePG and PostgreSQL use it when the Secret is also
+// the client CA: replicas present tls.crt and tls.key as the streaming_replica
+// user, and the primary verifies the certificate against ca.crt of the same
+// Secret.
 func ValidateReplicationCertificate(secret *corev1.Secret) error {
-	leaf, err := verifyCertificate(secret, secret, x509.ExtKeyUsageClientAuth, "replication")
+	return ValidateReplicationCertificateAgainst(secret, secret)
+}
+
+// ValidateReplicationCertificateAgainst checks the replication certificate in
+// secret against the CA certificates in ca (ca.crt), the way CloudNativePG
+// does when clientCASecret and replicationTLSSecret are separate Secrets.
+func ValidateReplicationCertificateAgainst(secret, ca *corev1.Secret) error {
+	leaf, err := verifyCertificate(secret, ca, x509.ExtKeyUsageClientAuth, "replication")
 	if err != nil {
 		return err
 	}
 	if leaf.Subject.CommonName != cnpgv1.StreamingReplicationUser {
 		return fmt.Errorf("the certificate in Secret %s is issued to %q, and replicas authenticate with it as the %s user: "+
 			"issue it with the common name %s", secret.Name, leaf.Subject.CommonName, cnpgv1.StreamingReplicationUser, cnpgv1.StreamingReplicationUser)
+	}
+	return nil
+}
+
+// ValidateClientCASecret checks that secret holds a CA certificate in ca.crt
+// (PostgreSQL's ssl_ca_file). When requireKey is set, ca.key must also be
+// present and match ca.crt: CNPG needs it to sign the streaming_replica
+// certificate (and PgBouncer's when the proxy component is used).
+func ValidateClientCASecret(secret *corev1.Secret, requireKey bool) error {
+	if _, err := parseCertificates(secret.Data[caCertificateKey]); err != nil {
+		return fmt.Errorf("%s of the Secret %s: %w", caCertificateKey, secret.Name, err)
+	}
+	if !requireKey {
+		return nil
+	}
+	key := secret.Data[caPrivateKeyKey]
+	if len(key) == 0 {
+		return fmt.Errorf("the Secret %s needs the CA private key in %s so CloudNativePG can sign the streaming_replica certificate "+
+			"(or set internalCertificateSecretName to a certificate signed by this CA)", secret.Name, caPrivateKeyKey)
+	}
+	if _, err := tls.X509KeyPair(secret.Data[caCertificateKey], key); err != nil {
+		return fmt.Errorf("%s and %s of the Secret %s are not a CA certificate and its private key: %w",
+			caCertificateKey, caPrivateKeyKey, secret.Name, err)
 	}
 	return nil
 }

@@ -86,8 +86,9 @@ func ServerCertificateSecret(tls definition.TLSParameters, instance string) stri
 // ApplyTLS configures the Cluster for tls. requireTLS places RejectNonTLSRule
 // ahead of the user's pg_hba rules, so no user rule can admit an unencrypted
 // client. A server certificate Secret is both the certificate and the CA CNPG
-// checks it against, since it carries ca.crt; likewise the replication
-// certificate is checked against its own ca.crt. Without a server Secret,
+// checks it against, since it carries ca.crt. The client CA is
+// clientCASecretName when set, otherwise the replication Secret's ca.crt when
+// that is brought; without either CNPG issues both. Without a server Secret,
 // additionalNames go to the certificate CNPG issues.
 func ApplyTLS(pg *cnpgv1.Cluster, tls definition.TLSParameters, instance string) {
 	if RequireTLS(tls) {
@@ -101,9 +102,17 @@ func ApplyTLS(pg *cnpgv1.Cluster, tls definition.TLSParameters, instance string)
 	} else if len(tls.AdditionalNames) > 0 {
 		certificates.ServerAltDNSNames = slices.Clone(tls.AdditionalNames)
 	}
-	if secret := tls.InternalCertificateSecretName; secret != "" {
-		certificates.ReplicationTLSSecret = secret
-		certificates.ClientCASecret = secret
+	switch {
+	case tls.ClientCASecretName != "" && tls.InternalCertificateSecretName != "":
+		certificates.ClientCASecret = tls.ClientCASecretName
+		certificates.ReplicationTLSSecret = tls.InternalCertificateSecretName
+	case tls.ClientCASecretName != "":
+		// CNPG signs streaming_replica with ca.key of this Secret.
+		certificates.ClientCASecret = tls.ClientCASecretName
+	case tls.InternalCertificateSecretName != "":
+		// One Secret holds the replication certificate and the CA it chains to.
+		certificates.ReplicationTLSSecret = tls.InternalCertificateSecretName
+		certificates.ClientCASecret = tls.InternalCertificateSecretName
 	}
 	if !equality.Semantic.DeepEqual(certificates, cnpgv1.CertificatesConfiguration{}) {
 		pg.Spec.Certificates = &certificates
@@ -135,6 +144,7 @@ func ValidateTLS(in *corev1alpha1.Instance, proxy bool) field.ErrorList {
 	for _, ref := range []struct{ name, value string }{
 		{"certificateSecretName", tls.CertificateSecretName},
 		{"internalCertificateSecretName", tls.InternalCertificateSecretName},
+		{"clientCASecretName", tls.ClientCASecretName},
 	} {
 		if ref.value == "" {
 			continue
@@ -165,10 +175,14 @@ func ValidateTLS(in *corev1alpha1.Instance, proxy bool) field.ErrorList {
 		}
 	}
 
-	if tls.InternalCertificateSecretName != "" && proxy {
+	// Without a client CA Secret that holds ca.key, CNPG cannot issue
+	// PgBouncer's client certificate when the replication certificate is
+	// user-provided (no CA private key in that Secret).
+	if tls.InternalCertificateSecretName != "" && tls.ClientCASecretName == "" && proxy {
 		errs = append(errs, field.Forbidden(TLSPath.Child("internalCertificateSecretName"),
 			"cannot be combined with the proxy component: CloudNativePG issues the client certificate PgBouncer authenticates to PostgreSQL with "+
-				"from the private key of the CA that signs the replication certificate, and the Secret carries no CA key"))
+				"from the private key of the CA that signs the replication certificate; set clientCASecretName to a Secret that holds ca.key, "+
+				"or omit the replication certificate Secret so CloudNativePG issues it"))
 	}
 
 	if len(tls.AdditionalNames) > 0 && tls.CertificateSecretName != "" {
@@ -204,13 +218,17 @@ func ValidateTLSTransition(in, old *corev1alpha1.Instance) field.ErrorList {
 	if err != nil {
 		return nil
 	}
-	if legacy := legacyCertificates(old); legacy != nil && before.CertificateSecretName == "" && before.InternalCertificateSecretName == "" && before.Issuer == nil {
+	if legacy := legacyCertificates(old); legacy != nil && before.CertificateSecretName == "" && before.InternalCertificateSecretName == "" && before.ClientCASecretName == "" && before.Issuer == nil {
 		before.CertificateSecretName = legacy.ServerTLSSecret
 		before.InternalCertificateSecretName = legacy.ReplicationTLSSecret
+		// Same Secret for both maps to internalCertificateSecretName alone.
+		if legacy.ClientCASecret != "" && legacy.ClientCASecret != legacy.ReplicationTLSSecret {
+			before.ClientCASecretName = legacy.ClientCASecret
+		}
 	}
 	if CertificateSource(before) != CertificateSource(after) {
 		return field.ErrorList{field.Forbidden(TLSPath,
-			"certificateSecretName, internalCertificateSecretName and issuer can only be set when the instance is created")}
+			"certificateSecretName, internalCertificateSecretName, clientCASecretName and issuer can only be set when the instance is created")}
 	}
 	return nil
 }
@@ -221,7 +239,7 @@ func CertificateSource(tls definition.TLSParameters) string {
 	if tls.Issuer != nil {
 		issuer = tls.Issuer.Group + "/" + string(tls.Issuer.Kind) + "/" + tls.Issuer.Name
 	}
-	return issuer + " " + tls.CertificateSecretName + " " + tls.InternalCertificateSecretName
+	return issuer + " " + tls.CertificateSecretName + " " + tls.InternalCertificateSecretName + " " + tls.ClientCASecretName
 }
 
 // legacyCertificates are the CNPG certificates an Instance of an earlier

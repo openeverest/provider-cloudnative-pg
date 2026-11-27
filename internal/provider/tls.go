@@ -23,6 +23,7 @@ import (
 
 	"github.com/openeverest/provider-cloudnative-pg/definition"
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
+	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
 // caCertificateKey is the Secret key of the CA certificate, in the Secrets
@@ -41,6 +42,11 @@ func syncCertificates(c *controller.Context, pg *cnpgv1.Cluster, tls definition.
 		}
 	case tls.Issuer != nil:
 		if err := syncIssuedCertificate(c, pg, tls); err != nil {
+			return err
+		}
+	}
+	if tls.ClientCASecretName != "" {
+		if err := labelCertificateSecret(c, tls.ClientCASecretName, "clientCASecretName"); err != nil {
 			return err
 		}
 	}
@@ -201,29 +207,53 @@ func labelCertificateSecret(c *controller.Context, name, field string) error {
 // they exist: Sync waits for a missing one.
 func validateCertificateSecrets(c *controller.Context, tls definition.TLSParameters) (field.ErrorList, error) {
 	var errs field.ErrorList
-	for _, check := range []struct {
-		path     *field.Path
-		name     string
-		validate func(*corev1.Secret) error
-	}{
-		{serverCertificatePath(tls), cnpg.ServerCertificateSecret(tls, c.Name()), func(secret *corev1.Secret) error {
-			return cnpg.ValidateServerCertificate(secret, secret, readWriteHosts(c))
-		}},
-		{cnpg.TLSPath.Child("internalCertificateSecretName"), tls.InternalCertificateSecretName, cnpg.ValidateReplicationCertificate},
-	} {
-		if check.name == "" {
-			continue
-		}
-		secret, err := optionalSecret(c, check.name)
+	if name := cnpg.ServerCertificateSecret(tls, c.Name()); name != "" {
+		secret, err := optionalSecret(c, name)
 		if err != nil {
 			return nil, err
 		}
-		if secret == nil {
-			continue
+		if secret != nil {
+			if err := cnpg.ValidateServerCertificate(secret, secret, readWriteHosts(c)); err != nil {
+				errs = append(errs, field.Invalid(serverCertificatePath(tls), name, err.Error()))
+			}
 		}
-		if err := check.validate(secret); err != nil {
-			errs = append(errs, field.Invalid(check.path, check.name, err.Error()))
+	}
+
+	clientCA, err := optionalSecret(c, tls.ClientCASecretName)
+	if err != nil {
+		return nil, err
+	}
+	if tls.ClientCASecretName != "" && clientCA != nil {
+		// Without a replication certificate Secret, CNPG signs streaming_replica
+		// with ca.key. With the proxy, it also needs that key for PgBouncer.
+		_, proxy := c.Instance().Spec.Components[common.ComponentProxy]
+		requireKey := tls.InternalCertificateSecretName == "" || proxy
+		if err := cnpg.ValidateClientCASecret(clientCA, requireKey); err != nil {
+			errs = append(errs, field.Invalid(cnpg.TLSPath.Child("clientCASecretName"), tls.ClientCASecretName, err.Error()))
 		}
+	}
+
+	if tls.InternalCertificateSecretName == "" {
+		return errs, nil
+	}
+	repl, err := optionalSecret(c, tls.InternalCertificateSecretName)
+	if err != nil {
+		return nil, err
+	}
+	if repl == nil {
+		return errs, nil
+	}
+	var validateErr error
+	switch {
+	case tls.ClientCASecretName != "" && clientCA != nil:
+		validateErr = cnpg.ValidateReplicationCertificateAgainst(repl, clientCA)
+	case tls.ClientCASecretName != "":
+		// Client CA Secret not ready yet; Sync waits for it.
+	default:
+		validateErr = cnpg.ValidateReplicationCertificate(repl)
+	}
+	if validateErr != nil {
+		errs = append(errs, field.Invalid(cnpg.TLSPath.Child("internalCertificateSecretName"), tls.InternalCertificateSecretName, validateErr.Error()))
 	}
 	return errs, nil
 }
@@ -258,7 +288,7 @@ func validateTLSChange(c *controller.Context, tls definition.TLSParameters) (fie
 
 	forbidden := func(detail string) field.ErrorList {
 		return field.ErrorList{field.Forbidden(cnpg.TLSPath,
-			"certificateSecretName, internalCertificateSecretName and issuer can only be set when the instance is created: "+detail)}
+			"certificateSecretName, internalCertificateSecretName, clientCASecretName and issuer can only be set when the instance is created: "+detail)}
 	}
 	if current.ServerTLSSecret != want.ServerTLSSecret {
 		return forbidden(fmt.Sprintf("the instance presents the server certificate of %s", describeServerSecret(current.ServerTLSSecret, c.Name()))), nil
