@@ -1,0 +1,21 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  # 51 characters, one more than CloudNativePG accepts.
+  name: test-cnpg-admission-name-too-long-for-cloudnativepg
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  components:
+    engine:
+      type: postgresql
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 50m
+          memory: 128Mi
+      storage:
+        size: 512Mi

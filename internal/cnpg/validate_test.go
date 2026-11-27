@@ -1,12 +1,14 @@
 package cnpg
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	cnpgv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -100,7 +102,7 @@ func TestValidateEngineCPU(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.request+"/"+tt.limit, func(t *testing.T) {
-			err := ValidateEngine(engine(tt.request, tt.limit))
+			err := ValidateEngine(field.NewPath("engine"), engine(tt.request, tt.limit)).ToAggregate()
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -141,5 +143,97 @@ func TestValidateBootstrap(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateName(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		want []field.ErrorType
+	}{
+		{name: "orders"},
+		{name: strings.Repeat("a", MaxNameLength)},
+		{name: strings.Repeat("a", MaxNameLength+1), want: []field.ErrorType{field.ErrorTypeTooLong}},
+		{name: "1orders", want: []field.ErrorType{field.ErrorTypeInvalid}},
+		{name: "orders.eu", want: []field.ErrorType{field.ErrorTypeInvalid}},
+		{name: strings.Repeat("a", MaxNameLength) + ".b", want: []field.ErrorType{field.ErrorTypeTooLong, field.ErrorTypeInvalid}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []field.ErrorType
+			for _, err := range ValidateName(tt.name) {
+				if err.Field != "metadata.name" {
+					t.Errorf("field = %s, want metadata.name", err.Field)
+				}
+				got = append(got, err.Type)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("errors = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateEngineReportsEveryError(t *testing.T) {
+	replicas := int32(0)
+	engine := corev1alpha1.ComponentSpec{
+		Replicas: &replicas,
+		Resources: &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0.0001")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+		},
+	}
+	var got []string
+	for _, err := range ValidateEngine(field.NewPath("engine"), engine) {
+		got = append(got, err.Field)
+	}
+	want := []string{
+		"engine.replicas",
+		"engine.storage.size",
+		"engine.resources.requests[cpu]",
+		"engine.resources.requests[memory]",
+		"engine.resources.limits[memory]",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fields = %v, want %v", got, want)
+	}
+}
+
+func TestValidateEngineMinimums(t *testing.T) {
+	engine := func(storage, cpu, memory string) corev1alpha1.ComponentSpec {
+		list := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(memory)}
+		return corev1alpha1.ComponentSpec{
+			Storage:   &corev1alpha1.Storage{Size: resource.MustParse(storage)},
+			Resources: &corev1.ResourceRequirements{Requests: list, Limits: list.DeepCopy()},
+		}
+	}
+	for _, tt := range []struct {
+		name                 string
+		storage, cpu, memory string
+		want                 []string
+	}{
+		{name: "at the minimums", storage: "1Gi", cpu: "100m", memory: "256Mi"},
+		{name: "storage", storage: "1000Mi", cpu: "1", memory: "1Gi", want: []string{"e.storage.size"}},
+		{name: "cpu", storage: "1Gi", cpu: "99m", memory: "1Gi", want: []string{"e.resources.requests[cpu]", "e.resources.limits[cpu]"}},
+		{name: "memory", storage: "1Gi", cpu: "1", memory: "255Mi", want: []string{"e.resources.requests[memory]", "e.resources.limits[memory]"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, err := range ValidateEngineMinimums(field.NewPath("e"), engine(tt.storage, tt.cpu, tt.memory)) {
+				got = append(got, err.Field)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("fields = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateCustomSpecWALMinimum(t *testing.T) {
+	for size, wantErr := range map[string]bool{"1Gi": false, "512Mi": true} {
+		custom := components.CNPGCustomSpec{WALStorage: &cnpgv1.StorageConfiguration{Size: size}}
+		errs := ValidateCustomSpecMinimums(field.NewPath("p"), &custom)
+		if (len(errs) > 0) != wantErr {
+			t.Errorf("walStorage.size %s: errors = %v, wantErr %v", size, errs, wantErr)
+		}
 	}
 }
