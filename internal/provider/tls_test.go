@@ -162,6 +162,20 @@ func TestLabelCertificateSecret(t *testing.T) {
 			t.Fatalf("error = %v, want a wait for the Secret repl", err)
 		}
 	})
+
+	t.Run("labels the client CA Secret", func(t *testing.T) {
+		ca := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "client-ca", Namespace: testNamespace}}
+		c, cl := tlsContext(t, ca)
+		if err := syncCertificates(c, testCluster(), definition.TLSParameters{ClientCASecretName: "client-ca"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(context.Background(), client.ObjectKeyFromObject(ca), ca); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := ca.Labels[utils.WatchedLabelName]; !ok {
+			t.Fatalf("labels = %v, want %s", ca.Labels, utils.WatchedLabelName)
+		}
+	})
 }
 
 func TestCertificateWaitNamesTheIssuerProblem(t *testing.T) {
