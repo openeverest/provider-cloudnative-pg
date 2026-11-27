@@ -1,0 +1,102 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+# Client certificate (mTLS): tls.clientCASecretName trusts an external CA.
+# cert_user logs in with a certificate that CA signs; password login is
+# refused; replicas still authenticate (CloudNativePG signs streaming_replica
+# with ca.key of that Secret).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tls-client-cert
+spec:
+  timeouts:
+    cleanup: 3m
+  steps:
+    - name: create-client-ca-and-instance
+      try:
+        - apply:
+            file: 00-ca.yaml
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              kubectl wait --for=condition=Ready certificate/client-ca -n "$NAMESPACE" --timeout=90s
+              kubectl wait --for=condition=Ready issuer/client-ca -n "$NAMESPACE" --timeout=60s
+              # CloudNativePG's clientCASecret expects ca.crt and ca.key; cert-manager
+              # stores the CA pair as tls.crt / tls.key on an isCA Certificate.
+              kubectl get secret client-ca -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/client-ca.crt
+              kubectl get secret client-ca -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d > /tmp/client-ca.key
+              kubectl create secret generic cnpg-client-ca -n "$NAMESPACE" \
+                --from-file=ca.crt=/tmp/client-ca.crt --from-file=ca.key=/tmp/client-ca.key
+        - apply:
+            file: 00-instance.yaml
+        - script:
+            timeout: 9m
+            content: |
+              set -eu
+              kubectl wait --for=create cluster/tls-mtls -n "$NAMESPACE" --timeout=90s
+              kubectl wait --for=condition=Ready cluster/tls-mtls -n "$NAMESPACE" --timeout=420s
+              test "$(kubectl get cluster tls-mtls -n "$NAMESPACE" -o jsonpath='{.spec.certificates.clientCASecret}')" = cnpg-client-ca
+              test -z "$(kubectl get cluster tls-mtls -n "$NAMESPACE" -o jsonpath='{.spec.certificates.replicationTLSSecret}')"
+              test "$(kubectl get secret cnpg-client-ca -n "$NAMESPACE" -o jsonpath='{.metadata.labels.cnpg\.io/reload}')" = true
+              # Replicas are up: CloudNativePG issued streaming_replica with the client CA key.
+              test "$(kubectl get cluster tls-mtls -n "$NAMESPACE" -o jsonpath='{.status.readyInstances}')" = 2
+      catch:
+        - script:
+            content: kubectl get instance,certificate,cluster,pod,secret -n "$NAMESPACE" -o wide
+        - script:
+            content: |
+              kubectl get instance tls-mtls -n "$NAMESPACE" -o jsonpath='{.status.conditions}{"\n"}'
+              kubectl get cluster tls-mtls -n "$NAMESPACE" -o jsonpath='{.status.phase}{" | "}{.status.phaseReason}{"\n"}'
+
+    - name: cert-login-and-reject-password
+      try:
+        - script:
+            timeout: 3m
+            content: |
+              set -eu
+              kubectl apply -n "$NAMESPACE" -f - <<YAML
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: cert-user
+              spec:
+                secretName: cert-user
+                commonName: cert_user
+                usages: [digital signature, key encipherment, client auth]
+                issuerRef:
+                  name: client-ca
+                  kind: Issuer
+              YAML
+              kubectl wait --for=condition=Ready certificate/cert-user -n "$NAMESPACE" --timeout=90s
+
+              kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/cert_user.crt
+              kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d > /tmp/cert_user.key
+              # Server CA for verify-full (operator-managed; same Secret name as the cluster CA).
+              kubectl get secret tls-mtls-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/server-ca.crt
+
+              kubectl cp /tmp/cert_user.crt "$NAMESPACE/tls-mtls-1:/tmp/cert_user.crt" -c postgres
+              kubectl cp /tmp/cert_user.key "$NAMESPACE/tls-mtls-1:/tmp/cert_user.key" -c postgres
+              kubectl cp /tmp/server-ca.crt "$NAMESPACE/tls-mtls-1:/tmp/server-ca.crt" -c postgres
+
+              for _ in $(seq 1 30); do
+                out="$(kubectl exec -n "$NAMESPACE" tls-mtls-1 -c postgres -- \
+                  psql "host=tls-mtls-rw user=cert_user dbname=app sslmode=verify-full sslrootcert=/tmp/server-ca.crt sslcert=/tmp/cert_user.crt sslkey=/tmp/cert_user.key" \
+                  -tAc 'SELECT current_user' 2>&1 || true)"
+                [ "$out" = cert_user ] && break
+                sleep 2
+              done
+              echo "cert login: $out"
+              test "$out" = cert_user
+
+              # Password login for cert_user must be refused (disablePassword + reject rule).
+              pw_out="$(kubectl exec -n "$NAMESPACE" tls-mtls-1 -c postgres -- \
+                env PGPASSWORD=wrong \
+                psql "host=tls-mtls-rw user=cert_user dbname=app sslmode=require" \
+                -tAc 'SELECT 1' 2>&1 || true)"
+              echo "password login: $pw_out"
+              case "$pw_out" in *password*|*authentication*|*rejected*|*no pg_hba*|*FATAL*) ;; *) exit 1 ;; esac
+      catch:
+        - script:
+            content: kubectl get certificate,secret -n "$NAMESPACE"
+        - script:
+            content: kubectl get cluster tls-mtls -n "$NAMESPACE" -o jsonpath='{.spec.postgresql.pg_hba}'

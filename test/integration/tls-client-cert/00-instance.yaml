@@ -1,0 +1,33 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: tls-mtls
+spec:
+  providerRef:
+    name: provider-cloudnative-pg
+  parameters:
+    tls:
+      mode: requireTLS
+      clientCASecretName: cnpg-client-ca
+  components:
+    engine:
+      replicas: 2
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      storage:
+        size: 1Gi
+      parameters:
+        managed:
+          roles:
+            - name: cert_user
+              ensure: present
+              login: true
+              disablePassword: true
+        pgHBA: |
+          hostssl app cert_user all cert
+          host    app cert_user all reject
