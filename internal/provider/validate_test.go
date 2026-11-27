@@ -197,7 +197,9 @@ func TestValidate(t *testing.T) {
 				}
 				in.Spec.Components[common.ComponentEngine] = engine
 			},
-			want: []string{"spec.components[engine].service"},
+			// Name > MaxNameLength (50) is rejected; the derived managed Service
+			// name (<name>-rw-lb) is also over the DNS-1035 63-character limit.
+			want: []string{"metadata.name", "spec.components[engine].service"},
 		},
 		{
 			name: "proxy with engine.service LoadBalancer is forbidden",
