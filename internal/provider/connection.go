@@ -31,6 +31,13 @@ const (
 	// That Service targets ready replicas and excludes the primary, so a
 	// cluster with fewer than two instances has no endpoints for it.
 	hostROProperty = "host-ro"
+	// hostLBProperty is the DNS name of the managed exposure Service
+	// (<cluster>-rw-lb) created for engine.service NodePort / LoadBalancer.
+	hostLBProperty = "host-lb"
+	// nodePortProperty is the allocated NodePort on that managed Service.
+	// External clients combine any node IP with this port; host and port stay
+	// on the in-cluster read-write Service.
+	nodePortProperty = "nodePort"
 )
 
 func connectionDetails(c *controller.Context, pg *cnpgv1.Cluster) (controller.ConnectionDetails, bool) {

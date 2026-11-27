@@ -16,10 +16,13 @@ registries:
 options:
   k3d:
     wait: true
+    # Host-side k3d proxy (not klipper-lb). Keep off; NodePort / in-cluster access is enough.
     disableLoadbalancer: true
   k3s:
     extraArgs:
-      - arg: "--disable=traefik,metrics-server,servicelb"
+      # Keep klipper servicelb so LoadBalancer Services get an EXTERNAL-IP
+      # (service-exposure integration test waits on that address).
+      - arg: "--disable=traefik,metrics-server"
         nodeFilters:
           - server:*
       - arg: "--disable-network-policy"

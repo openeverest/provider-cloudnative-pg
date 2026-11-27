@@ -68,6 +68,9 @@ package provider
 // Pods (the runtime counts labelled component pods into Instance status.components):
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
+// Managed exposure Services (engine.service LoadBalancer / NodePort):
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+
 // PgBouncer Deployments the operator creates for a Pooler (readiness in Status()):
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 

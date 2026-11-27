@@ -34,7 +34,9 @@ func TestConnectionDetails(t *testing.T) {
 		cluster       *cnpgv1.Cluster
 		objects       []client.Object
 		parameters    string
+		service       *corev1alpha1.Service
 		wantConverged bool
+		wantMsg       string
 		want          controller.ConnectionDetails
 	}{
 		{
@@ -172,6 +174,80 @@ func TestConnectionDetails(t *testing.T) {
 			),
 		},
 		{
+			name: "LoadBalancer waits for an address",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{Bootstrap: appDatabase},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace}},
+			},
+			service: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			wantMsg: "waiting for the load balancer address",
+		},
+		{
+			name: "LoadBalancer publishes the external address",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{Bootstrap: appDatabase},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace},
+					Status: corev1.ServiceStatus{
+						LoadBalancer: corev1.LoadBalancerStatus{
+							Ingress: []corev1.LoadBalancerIngress{{IP: "203.0.113.10"}},
+						},
+					},
+				},
+			},
+			service:       &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			wantConverged: true,
+			want: connectionWantExtra(
+				"203.0.113.10", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
+				"postgresql://app:secret@203.0.113.10:5432/app?sslmode=require",
+				map[string]string{hostLBProperty: "pg-rw-lb.ns.svc"},
+			),
+		},
+		{
+			name: "NodePort waits for allocation",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{Bootstrap: appDatabase},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace}},
+			},
+			service: &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
+			wantMsg: "waiting for the node port",
+		},
+		{
+			name: "NodePort publishes host-lb and nodePort",
+			cluster: readyCluster(&cnpgv1.Cluster{
+				Spec: cnpgv1.ClusterSpec{Bootstrap: appDatabase},
+			}),
+			objects: []client.Object{
+				credentialSecret("custom-app", "app", "secret", "5432"),
+				&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace},
+					Spec: corev1.ServiceSpec{
+						Type: corev1.ServiceTypeNodePort,
+						Ports: []corev1.ServicePort{{
+							Port:     5432,
+							NodePort: 30432,
+						}},
+					},
+				},
+			},
+			service:       &corev1alpha1.Service{ServiceType: corev1.ServiceTypeNodePort},
+			wantConverged: true,
+			want: connectionWantExtra(
+				"pg-rw.ns.svc", "5432", "app", "secret", "app", "custom-app", sslModeRequire, true, true,
+				"postgresql://app:secret@pg-rw.ns.svc:5432/app?sslmode=require",
+				map[string]string{hostLBProperty: "pg-rw-lb.ns.svc", nodePortProperty: "30432"},
+			),
+		},
+		{
 			name: "single instance omits the read-only service",
 			cluster: readyCluster(&cnpgv1.Cluster{
 				Spec: cnpgv1.ClusterSpec{
@@ -226,7 +302,7 @@ func TestConnectionDetails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := statusWithObjects(t, tt.cluster, tt.parameters, tt.objects...)
+			got, err := statusWithObjects(t, tt.cluster, tt.parameters, tt.service, tt.objects...)
 			if err != nil {
 				t.Fatalf("Status: %v", err)
 			}
@@ -234,8 +310,12 @@ func TestConnectionDetails(t *testing.T) {
 				t.Fatalf("converged = %t, want %t (message: %s)", got.Converged, tt.wantConverged, got.Message)
 			}
 			if !tt.wantConverged {
-				if got.Message != "Waiting for the CloudNativePG credentials Secret" {
-					t.Fatalf("message = %q", got.Message)
+				wantMsg := tt.wantMsg
+				if wantMsg == "" {
+					wantMsg = "Waiting for the CloudNativePG credentials Secret"
+				}
+				if got.Message != wantMsg {
+					t.Fatalf("message = %q, want %q", got.Message, wantMsg)
 				}
 				return
 			}
@@ -284,6 +364,10 @@ func credentialSecret(name, username, password, port string) *corev1.Secret {
 }
 
 func connectionWant(host, port, username, password, database, secretName, sslmode string, read, readOnly bool, uri string) controller.ConnectionDetails {
+	return connectionWantExtra(host, port, username, password, database, secretName, sslmode, read, readOnly, uri, nil)
+}
+
+func connectionWantExtra(host, port, username, password, database, secretName, sslmode string, read, readOnly bool, uri string, extraProps map[string]string) controller.ConnectionDetails {
 	extra := map[string]string{
 		"database":   database,
 		"secretName": secretName,
@@ -294,6 +378,9 @@ func connectionWant(host, port, username, password, database, secretName, sslmod
 	}
 	if readOnly {
 		extra[hostROProperty] = "pg-ro.ns.svc"
+	}
+	for k, v := range extraProps {
+		extra[k] = v
 	}
 	return controller.ConnectionDetails{
 		Type:                 "postgresql",
@@ -324,7 +411,7 @@ func assertConnectionDetails(t *testing.T, got, want controller.ConnectionDetail
 	}
 }
 
-func statusWithObjects(t *testing.T, cluster *cnpgv1.Cluster, parameters string, objects ...client.Object) (controller.Status, error) {
+func statusWithObjects(t *testing.T, cluster *cnpgv1.Cluster, parameters string, service *corev1alpha1.Service, objects ...client.Object) (controller.Status, error) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{cnpgv1.AddToScheme, corev1.AddToScheme} {
@@ -332,13 +419,17 @@ func statusWithObjects(t *testing.T, cluster *cnpgv1.Cluster, parameters string,
 			t.Fatal(err)
 		}
 	}
-	instance := &corev1alpha1.Instance{ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace}}
+	engine := corev1alpha1.ComponentSpec{Service: service}
 	if parameters != "" {
-		instance.Spec.Components = map[string]corev1alpha1.ComponentSpec{
-			common.ComponentEngine: {
-				Parameters: &runtime.RawExtension{Raw: []byte(parameters)},
+		engine.Parameters = &runtime.RawExtension{Raw: []byte(parameters)}
+	}
+	instance := &corev1alpha1.Instance{
+		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
+		Spec: corev1alpha1.InstanceSpec{
+			Components: map[string]corev1alpha1.ComponentSpec{
+				common.ComponentEngine: engine,
 			},
-		}
+		},
 	}
 	objects = append(objects, cluster)
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()

@@ -422,9 +422,33 @@ func TestPoolerConnectionDetails(t *testing.T) {
 			t.Fatalf("problems = %+v", got.Problems)
 		}
 	})
+
+	t.Run("LoadBalancer does not override pooler host or gate Ready", func(t *testing.T) {
+		pooler := &cnpgv1.Pooler{
+			ObjectMeta: metav1.ObjectMeta{Name: "pg-pooler", Namespace: testNamespace},
+			Spec:       cnpgv1.PoolerSpec{Instances: ptr.To(int32(1))},
+			Status:     cnpgv1.PoolerStatus{Phase: cnpgv1.PoolerPhaseActive, Instances: 1},
+		}
+		// Pending LB address must not keep the Instance from Ready when a proxy is set.
+		lb := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "pg-rw-lb", Namespace: testNamespace}}
+		got := proxyStatusWithService(t, cluster, secret, nil,
+			&corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer},
+			pooler, poolerDeployment("pg-pooler", 1), lb)
+		if !got.Converged {
+			t.Fatalf("converged = false (%s)", got.Message)
+		}
+		if got.ConnectionDetails.Host != "pg-pooler.ns.svc" || got.ConnectionDetails.Port != port {
+			t.Fatalf("endpoint = %s:%s", got.ConnectionDetails.Host, got.ConnectionDetails.Port)
+		}
+	})
 }
 
 func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, proxyParams *runtime.RawExtension, objs ...client.Object) controller.Status {
+	t.Helper()
+	return proxyStatusWithService(t, cluster, secret, proxyParams, nil, objs...)
+}
+
+func proxyStatusWithService(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, proxyParams *runtime.RawExtension, service *corev1alpha1.Service, objs ...client.Object) controller.Status {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{cnpgv1.AddToScheme, corev1.AddToScheme, appsv1.AddToScheme} {
@@ -436,7 +460,8 @@ func proxyStatus(t *testing.T, cluster *cnpgv1.Cluster, secret *corev1.Secret, p
 	instance := &corev1alpha1.Instance{
 		ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: testNamespace},
 		Spec: corev1alpha1.InstanceSpec{Components: map[string]corev1alpha1.ComponentSpec{
-			common.ComponentProxy: proxy,
+			common.ComponentEngine: {Service: service},
+			common.ComponentProxy:  proxy,
 		}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{cluster, secret}, objs...)...).Build()

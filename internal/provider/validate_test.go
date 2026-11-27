@@ -41,9 +41,10 @@ func TestValidate(t *testing.T) {
 	v := validationtest.New(t, New(), providerSpecPath)
 
 	tests := []struct {
-		name   string
-		mutate func(*corev1alpha1.Instance)
-		want   []string
+		name         string
+		mutate       func(*corev1alpha1.Instance)
+		want         []string
+		wantWarnings []string
 	}{
 		{name: "valid instance"},
 		{
@@ -146,6 +147,87 @@ func TestValidate(t *testing.T) {
 			want: []string{"spec.components[proxy]"},
 		},
 		{
+			name: "unsupported engine.service type",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeExternalName}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			want: []string{"spec.components[engine].service.serviceType"},
+		},
+		{
+			name: "engine.service with managed.services.additional",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
+				engine.Parameters = &runtime.RawExtension{Raw: []byte(`{"managed":{"services":{"additional":[{"selectorType":"rw","serviceTemplate":{"metadata":{"name":"custom"}}}]}}}`)}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			want: []string{"spec.components[engine].parameters.managed.services.additional"},
+		},
+		{
+			name: "invalid loadBalancer source range",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"not-a-cidr"},
+					},
+				}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			want: []string{"spec.components[engine].service.loadBalancerService.sourceRanges[0]"},
+		},
+		{
+			name: "engine.service name too long",
+			mutate: func(in *corev1alpha1.Instance) {
+				in.Name = strings.Repeat("a", 58)
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			// Name > MaxNameLength (50) is rejected; the derived managed Service
+			// name (<name>-rw-lb) is also over the DNS-1035 63-character limit.
+			want: []string{"metadata.name", "spec.components[engine].service"},
+		},
+		{
+			name: "proxy with engine.service LoadBalancer is forbidden",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{
+					ServiceType: corev1.ServiceTypeLoadBalancer,
+					LoadBalancerService: &corev1alpha1.LoadBalancerService{
+						SourceRanges: corev1alpha1.SourceRanges{"10.0.0.0/8"},
+					},
+				}
+				in.Spec.Components[common.ComponentEngine] = engine
+				in.Spec.Components[common.ComponentProxy] = corev1alpha1.ComponentSpec{
+					Replicas: new(int32(1)),
+				}
+			},
+			want: []string{"spec.components[engine].service"},
+		},
+		{
+			name: "LoadBalancer without sourceRanges warns",
+			mutate: func(in *corev1alpha1.Instance) {
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Service = &corev1alpha1.Service{ServiceType: corev1.ServiceTypeLoadBalancer}
+				in.Spec.Components[common.ComponentEngine] = engine
+			},
+			wantWarnings: []string{"spec.components[engine].service.loadBalancerService.sourceRanges"},
+		},
+		{
 			name: "replication certificate with a proxy",
 			mutate: func(in *corev1alpha1.Instance) {
 				in.Spec.Parameters = &runtime.RawExtension{Raw: []byte(`{"tls":{"internalCertificateSecretName":"repl"}}`)}
@@ -168,6 +250,12 @@ func TestValidate(t *testing.T) {
 				fields = append(fields, err.Field)
 			}
 			assert.Equal(t, tt.want, fields, "errors: %v", got.Errors)
+
+			var warned []string
+			for _, w := range got.Warnings {
+				warned = append(warned, strings.SplitN(w, ":", 2)[0])
+			}
+			assert.Equal(t, tt.wantWarnings, warned, "warnings: %v", got.Warnings)
 		})
 	}
 }

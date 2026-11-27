@@ -3333,6 +3333,20 @@ spec:
                     slowOpThresholdMs: 200
               path: spec.components.engine.parameters.postgresql.parameters
               uiType: text
+            externalAccess:
+              fieldParams:
+                defaultValue: ClusterIP
+                helperText: Expose the PostgreSQL primary outside the cluster. ClusterIP keeps the default in-cluster Services. LoadBalancer publishes the LB address as host. NodePort keeps the in-cluster host and publishes host-lb plus the allocated nodePort for <nodeIP>:<nodePort> access. Not available together with a proxy.
+                label: External access
+                options:
+                  - label: ClusterIP
+                    value: ClusterIP
+                  - label: LoadBalancer
+                    value: LoadBalancer
+                  - label: NodePort
+                    value: NodePort
+              path: spec.components.engine.service.serviceType
+              uiType: select
             pgHBA:
               fieldParams:
                 helperText: 'Optional. One pg_hba.conf record per line, checked in order before the default rule that admits every user with a password; end with a reject record to allow only what is listed. Methods: scram-sha-256, md5, cert, ldap, radius, reject. Applied without a restart.'
@@ -3375,6 +3389,7 @@ spec:
               validation:
                 required: true
           componentsOrder:
+            - externalAccess
             - storageClass
             - priorityClassName
             - pgHBA

@@ -56,11 +56,14 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
 	errs = append(errs, invalid(enginePath.Child("schedulingPolicy"), cnpg.ValidateScheduling(engine.SchedulingPolicy, &custom))...)
+	_, hasProxy := instance.Spec.Components[common.ComponentProxy]
+	serviceErrs, serviceWarnings := validateService(instance.Name, engine.Service, &custom, hasProxy)
+	errs = append(errs, serviceErrs...)
 	errs = append(errs, invalid(engineParams.Child("extensions"), cnpg.ValidateExtensions(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("extensions", "pgStatStatements"), cnpg.ValidatePgStatStatements(&custom))...)
 	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
-	warnings := monitoringWarnings(instance, &custom)
+	warnings := append(monitoringWarnings(instance, &custom), serviceWarnings...)
 	minimums := append(cnpg.ValidateEngineMinimums(enginePath, engine), cnpg.ValidateCustomSpecMinimums(engineParams, &custom)...)
 	switch {
 	case in.Old == nil && instance.Status.ObservedGeneration > 0:
