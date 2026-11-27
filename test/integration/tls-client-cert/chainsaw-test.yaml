@@ -69,18 +69,27 @@ spec:
               YAML
               kubectl wait --for=condition=Ready certificate/cert-user -n "$NAMESPACE" --timeout=90s
 
-              kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/cert_user.crt
-              kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d > /tmp/cert_user.key
+              # CNPG pods have a read-only rootfs; /controller is writable (see tls-certificates).
+              cert="$(kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d)"
+              key="$(kubectl get secret cert-user -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d)"
               # Server CA for verify-full (operator-managed; same Secret name as the cluster CA).
-              kubectl get secret tls-mtls-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/server-ca.crt
-
-              kubectl cp /tmp/cert_user.crt "$NAMESPACE/tls-mtls-1:/tmp/cert_user.crt" -c postgres
-              kubectl cp /tmp/cert_user.key "$NAMESPACE/tls-mtls-1:/tmp/cert_user.key" -c postgres
-              kubectl cp /tmp/server-ca.crt "$NAMESPACE/tls-mtls-1:/tmp/server-ca.crt" -c postgres
+              ca="$(kubectl get secret tls-mtls-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' | base64 -d)"
+              kubectl exec -i -n "$NAMESPACE" tls-mtls-1 -c postgres -- sh -c \
+                'cat > /controller/cert_user.crt' <<CERT
+              $cert
+              CERT
+              kubectl exec -i -n "$NAMESPACE" tls-mtls-1 -c postgres -- sh -c \
+                'cat > /controller/cert_user.key && chmod 600 /controller/cert_user.key' <<KEY
+              $key
+              KEY
+              kubectl exec -i -n "$NAMESPACE" tls-mtls-1 -c postgres -- sh -c \
+                'cat > /controller/server-ca.crt' <<CA
+              $ca
+              CA
 
               for _ in $(seq 1 30); do
                 out="$(kubectl exec -n "$NAMESPACE" tls-mtls-1 -c postgres -- \
-                  psql "host=tls-mtls-rw user=cert_user dbname=app sslmode=verify-full sslrootcert=/tmp/server-ca.crt sslcert=/tmp/cert_user.crt sslkey=/tmp/cert_user.key" \
+                  psql "host=tls-mtls-rw user=cert_user dbname=app sslmode=verify-full sslrootcert=/controller/server-ca.crt sslcert=/controller/cert_user.crt sslkey=/controller/cert_user.key" \
                   -tAc 'SELECT current_user' 2>&1 || true)"
                 [ "$out" = cert_user ] && break
                 sleep 2
