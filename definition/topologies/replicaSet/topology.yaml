@@ -711,7 +711,7 @@ ui:
           uiType: group
           groupType: bordered
           label: "Certificates"
-          description: "Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed after the instance is created."
+          description: "Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. A client CA trusts application client certificates (method cert in pgHBA). Can't be changed after the instance is created."
           components:
             issuer:
               uiType: group
@@ -762,12 +762,25 @@ ui:
                 regex:
                   pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
                   message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
+            clientCASecretName:
+              uiType: text
+              path: spec.parameters.tls.clientCASecretName
+              fieldParams:
+                label: "Client CA secret"
+                helperText: "Secret whose ca.crt PostgreSQL trusts for client certificates (application mTLS and replication). Without a replication certificate secret it must also hold ca.key so CloudNativePG can sign streaming_replica. With the PgBouncer proxy, ca.key is required too."
+                modes:
+                  edit:
+                    disabled: true
+              validation:
+                regex:
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                  message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
             internalCertificateSecretName:
               uiType: text
               path: spec.parameters.tls.internalCertificateSecretName
               fieldParams:
                 label: "Replication certificate secret"
-                helperText: "Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key), and the CA certificate that signs it (ca.crt). Can't be combined with the PgBouncer proxy."
+                helperText: "Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key). Without a client CA secret it must also hold the CA that signs it (ca.crt). Can't be combined with the PgBouncer proxy unless a client CA secret with ca.key is also set."
                 modes:
                   edit:
                     disabled: true
@@ -776,11 +789,12 @@ ui:
                   pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
                   message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
                 celExpressions:
-                  - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '' || !has(spec.components.proxy)"
-                    message: "Can't be combined with the PgBouncer proxy"
+                  - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '' || !has(spec.components.proxy) || (has(spec.parameters.tls.clientCASecretName) && spec.parameters.tls.clientCASecretName != '')"
+                    message: "Can't be combined with the PgBouncer proxy unless a client CA secret is also set"
           componentsOrder:
             - issuer
             - certificateSecretName
+            - clientCASecretName
             - internalCertificateSecretName
       componentsOrder:
         - mode

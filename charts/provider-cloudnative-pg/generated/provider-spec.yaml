@@ -3240,15 +3240,29 @@ spec:
                 clients connect to, such as <instance>-rw.<namespace>.svc. Cannot be
                 combined with issuer or additionalNames.
               type: string
+            clientCASecretName:
+              description: |-
+                ClientCASecretName names a Secret in the instance namespace whose ca.crt
+                PostgreSQL trusts for client certificates (ssl_ca_file): application
+                clients using method cert in pgHBA, and the replication certificate.
+                Without internalCertificateSecretName the Secret must also hold ca.key
+                so CloudNativePG can sign the streaming_replica certificate. With both,
+                bring a replication certificate signed by that CA; ca.key is then
+                optional unless the proxy component is used. Cannot name a Secret
+                CloudNativePG would overwrite (<instance>-ca, -server, -replication).
+              type: string
             internalCertificateSecretName:
               description: |-
                 InternalCertificateSecretName names a Secret in the instance namespace
-                with the client certificate replicas authenticate to the primary with,
-                in the same format: issued to the streaming_replica user (common name)
-                for client authentication, and signed by the CA in its ca.crt. Without
-                it CloudNativePG issues the replication certificate. Cannot be combined
-                with the proxy component, whose client certificate CloudNativePG issues
-                with the private key of that CA.
+                with the client certificate replicas authenticate to the primary with
+                (tls.crt, tls.key), issued to the streaming_replica user (common name)
+                for client authentication. Without clientCASecretName it is also the
+                client CA (ca.crt): PostgreSQL verifies the certificate against that
+                ca.crt. With clientCASecretName, PostgreSQL verifies it against that
+                Secret's ca.crt instead. Without it CloudNativePG issues the
+                replication certificate. Cannot be combined with the proxy component
+                unless clientCASecretName is also set (and that Secret holds ca.key),
+                because PgBouncer's client certificate is issued with that CA key.
               type: string
             issuer:
               description: |-
@@ -4048,9 +4062,22 @@ spec:
                     regex:
                       message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                clientCASecretName:
+                  fieldParams:
+                    helperText: Secret whose ca.crt PostgreSQL trusts for client certificates (application mTLS and replication). Without a replication certificate secret it must also hold ca.key so CloudNativePG can sign streaming_replica. With the PgBouncer proxy, ca.key is required too.
+                    label: Client CA secret
+                    modes:
+                      edit:
+                        disabled: true
+                  path: spec.parameters.tls.clientCASecretName
+                  uiType: text
+                  validation:
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 internalCertificateSecretName:
                   fieldParams:
-                    helperText: Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key), and the CA certificate that signs it (ca.crt). Can't be combined with the PgBouncer proxy.
+                    helperText: Secret with the client certificate replicas authenticate with, issued to streaming_replica (tls.crt, tls.key). Without a client CA secret it must also hold the CA that signs it (ca.crt). Can't be combined with the PgBouncer proxy unless a client CA secret with ca.key is also set.
                     label: Replication certificate secret
                     modes:
                       edit:
@@ -4059,8 +4086,8 @@ spec:
                   uiType: text
                   validation:
                     celExpressions:
-                      - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '''' || !has(spec.components.proxy)'
-                        message: Can't be combined with the PgBouncer proxy
+                      - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.internalCertificateSecretName) || spec.parameters.tls.internalCertificateSecretName == '''' || !has(spec.components.proxy) || (has(spec.parameters.tls.clientCASecretName) && spec.parameters.tls.clientCASecretName != '''')'
+                        message: Can't be combined with the PgBouncer proxy unless a client CA secret is also set
                     regex:
                       message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -4103,8 +4130,9 @@ spec:
               componentsOrder:
                 - issuer
                 - certificateSecretName
+                - clientCASecretName
                 - internalCertificateSecretName
-              description: Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed after the instance is created.
+              description: Leave empty to have CloudNativePG issue the certificates from a CA it creates for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. A client CA trusts application client certificates (method cert in pgHBA). Can't be changed after the instance is created.
               groupType: bordered
               label: Certificates
               uiType: group
