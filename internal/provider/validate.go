@@ -38,8 +38,8 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 		return controller.ValidationResult{Errors: field.ErrorList{field.Required(enginePath, "")}}
 	}
 
-	var errs field.ErrorList
-	errs = append(errs, invalid(enginePath, cnpg.ValidateEngine(engine))...)
+	errs := cnpg.ValidateName(instance.Name)
+	errs = append(errs, cnpg.ValidateEngine(enginePath, engine)...)
 	errs = append(errs, invalid(field.NewPath("spec", "backup", "storages"), barman.ValidateSchedules(instance.Spec.Backup))...)
 	errs = append(errs, invalid(field.NewPath("spec", "dataSource"), barman.ValidateDataSource(instance.Spec.DataSource))...)
 	errs = append(errs, invalid(componentsPath.Key(common.ComponentProxy), validateProxy(instance))...)
@@ -51,7 +51,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	if err != nil {
 		return controller.ValidationResult{Errors: append(errs, field.Invalid(engineParams, field.OmitValueType{}, err.Error()))}
 	}
-	errs = append(errs, invalid(engineParams, cnpg.ValidateCustomSpec(&custom))...)
+	errs = append(errs, cnpg.ValidateCustomSpec(engineParams, &custom)...)
 	errs = append(errs, invalid(engineParams.Child("postgresql", "synchronous"), cnpg.ValidateSynchronous(engine, &custom))...)
 	errs = append(errs, invalid(engineParams.Child("replicationSlots"), cnpg.ValidateReplicationSlots(&custom, engine.Version, instance.Spec.Version))...)
 	errs = append(errs, invalid(engineParams.Child("bootstrap", "volumeSnapshot"), cnpg.ValidateVolumeSnapshotBootstrap(&custom, instance.Spec.DataSource != nil))...)
@@ -64,9 +64,31 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs = append(errs, invalid(engineParams.Child("managed", "roles"), validateReservedRoles(&custom))...)
 
 	warnings := append(monitoringWarnings(instance, &custom), serviceWarnings...)
+	minimums := append(cnpg.ValidateEngineMinimums(enginePath, engine), cnpg.ValidateCustomSpecMinimums(engineParams, &custom)...)
+	switch {
+	case in.Old == nil && instance.Status.ObservedGeneration > 0:
+		// A reconciled Instance written before the minimums keeps syncing.
+		for _, err := range minimums {
+			warnings = append(warnings, err.Error())
+		}
+	case in.Old != nil:
+		// A minimum the stored Instance already misses doesn't block an update.
+		kept, carried := carryOver(minimums, oldMinimums(in.Old))
+		errs = append(errs, kept...)
+		warnings = append(warnings, carried...)
+	default:
+		errs = append(errs, minimums...)
+	}
+
 	if in.Old != nil {
-		old, err := engineCustomSpec(in.Old.Spec.Components[common.ComponentEngine])
+		oldEngine := in.Old.Spec.Components[common.ComponentEngine]
+		versionErrs, versionWarnings := cnpg.ValidateMajorVersionChange(versionPath(instance), postgresVersion(in.Old), postgresVersion(instance))
+		errs = append(errs, versionErrs...)
+		warnings = append(warnings, versionWarnings...)
+		warnings = append(warnings, cnpg.BackupChangeWarnings(in.Old.Spec.Backup, instance.Spec.Backup)...)
+		old, err := engineCustomSpec(oldEngine)
 		if err == nil {
+			errs = append(errs, cnpg.ValidateStorageChanges(enginePath, engineParams, oldEngine, engine, &old, &custom)...)
 			errs = append(errs, cnpg.ValidateExtensionChanges(&old, &custom, engineParams.Child("extensions"))...)
 			warnings = append(warnings, cnpg.ExtensionRestartWarnings(&old, &custom, engineParams.Child("extensions"))...)
 			if old.PriorityClassName != custom.PriorityClassName {
@@ -152,10 +174,64 @@ func engineCustomSpec(engine corev1alpha1.ComponentSpec) (components.CNPGCustomS
 	return custom, nil
 }
 
+// postgresVersion is the PostgreSQL release the Instance asks for: the engine
+// version, else the version bundle, else the bundle the runtime applied.
+func postgresVersion(in *corev1alpha1.Instance) string {
+	for _, v := range []string{in.Spec.Components[common.ComponentEngine].Version, in.Spec.Version, in.Status.Version} {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// versionPath is the field that sets the PostgreSQL release.
+func versionPath(in *corev1alpha1.Instance) *field.Path {
+	if in.Spec.Components[common.ComponentEngine].Version != "" {
+		return enginePath.Child("version")
+	}
+	return field.NewPath("spec", "version")
+}
+
 // invalid reports err, if any, as an invalid value of the field at path.
 func invalid(path *field.Path, err error) field.ErrorList {
 	if err == nil {
 		return nil
 	}
 	return field.ErrorList{field.Invalid(path, field.OmitValueType{}, err.Error())}
+}
+
+// oldMinimums reports the minimums the stored Instance misses.
+func oldMinimums(old *corev1alpha1.Instance) field.ErrorList {
+	engine := old.Spec.Components[common.ComponentEngine]
+	errs := cnpg.ValidateEngineMinimums(enginePath, engine)
+	if custom, err := engineCustomSpec(engine); err == nil {
+		errs = append(errs, cnpg.ValidateCustomSpecMinimums(engineParams, &custom)...)
+	}
+	return errs
+}
+
+// carryOver splits errs into those previous lacks, kept, and those previous
+// already had at the same type and field, returned as warnings. The runtime
+// ratchets admission the same way, but against Validate on the stored
+// Instance, which reports its minimums as warnings once it was reconciled.
+func carryOver(errs, previous field.ErrorList) (field.ErrorList, []string) {
+	type key struct {
+		typ   field.ErrorType
+		field string
+	}
+	had := make(map[key]bool, len(previous))
+	for _, err := range previous {
+		had[key{err.Type, err.Field}] = true
+	}
+	var kept field.ErrorList
+	var carried []string
+	for _, err := range errs {
+		if had[key{err.Type, err.Field}] {
+			carried = append(carried, err.Error())
+		} else {
+			kept = append(kept, err)
+		}
+	}
+	return kept, carried
 }

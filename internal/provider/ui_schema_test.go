@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 
+	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+
 	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
@@ -144,5 +146,7 @@ func TestUIResourceFieldsAreQuantities(t *testing.T) {
 			require.Contains(t, set, component, "%s resources of %s", name, component)
 			assert.NoError(t, cnpg.ValidateResources(set[component]), "the %s resources the UI offers for %s", name, component)
 		}
+		assert.Empty(t, cnpg.ValidateEngineMinimums(enginePath, corev1alpha1.ComponentSpec{Resources: set[common.ComponentEngine]}),
+			"the %s engine resources the UI offers", name)
 	}
 }

@@ -32,7 +32,7 @@ func TestWALStorage(t *testing.T) {
 	for _, size := range []string{"1Gi", "2Gi"} {
 		wal.Size = size
 		custom := components.CNPGCustomSpec{WALStorage: wal}
-		if err := cnpg.ValidateCustomSpec(&custom); err != nil {
+		if err := cnpg.ValidateCustomSpec(engineParams, &custom).ToAggregate(); err != nil {
 			t.Fatal(err)
 		}
 		got := buildClusterSpec(engine, custom)
@@ -43,7 +43,7 @@ func TestWALStorage(t *testing.T) {
 			t.Fatal("WAL configuration changed data storage")
 		}
 	}
-	if err := cnpg.ValidateCustomSpec(&components.CNPGCustomSpec{}); err != nil {
+	if err := cnpg.ValidateCustomSpec(engineParams, &components.CNPGCustomSpec{}).ToAggregate(); err != nil {
 		t.Fatal(err)
 	}
 	templateOnly := components.CNPGCustomSpec{WALStorage: &cnpgv1.StorageConfiguration{
@@ -53,12 +53,12 @@ func TestWALStorage(t *testing.T) {
 			},
 		},
 	}}
-	if err := cnpg.ValidateCustomSpec(&templateOnly); err != nil {
+	if err := cnpg.ValidateCustomSpec(engineParams, &templateOnly).ToAggregate(); err != nil {
 		t.Fatalf("pvcTemplate storage request must be accepted like CNPG does: %v", err)
 	}
 	for _, size := range []string{"", "invalid", "0", "-1Gi"} {
 		custom := components.CNPGCustomSpec{WALStorage: &cnpgv1.StorageConfiguration{Size: size}}
-		if err := cnpg.ValidateCustomSpec(&custom); err == nil {
+		if err := cnpg.ValidateCustomSpec(engineParams, &custom).ToAggregate(); err == nil {
 			t.Errorf("walStorage.size %q must be rejected", size)
 		}
 	}

@@ -7,8 +7,9 @@ spec:
   description: |
     The provider's admission webhook: it rejects an invalid Instance with the
     field path, admits it while the provider is down, blocks an update only on
-    errors the stored Instance did not already have, and rejects turning off
-    an extension that is created in the database.
+    errors the stored Instance did not already have, rejects turning off an
+    extension that is created in the database, reports every problem of a
+    new Instance at once, and rejects shrinking storage or changing its class.
   # Scales the provider down, which every other test depends on.
   concurrent: false
   catch:
@@ -98,6 +99,28 @@ spec:
               ($error != null): true
               (contains($stderr, 'spec.components[engine].parameters.extensions.pgvector.enabled')): true
               (contains($stderr, 'cannot be disabled once enabled')): true
+              (contains($stderr, 'destructive change')): true
+
+    - name: reject-long-name-and-too-small-resources
+      try:
+        - script:
+            content: kubectl apply --dry-run=server -n $NAMESPACE -f 60-too-small.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'metadata.name')): true
+              (contains($stderr, 'spec.components[engine].storage.size')): true
+              (contains($stderr, 'spec.components[engine].resources.requests[cpu]')): true
+              (contains($stderr, 'spec.components[engine].resources.limits[memory]')): true
+
+    - name: reject-storage-shrink-and-class-change
+      try:
+        - script:
+            content: kubectl apply -n $NAMESPACE -f 70-shrink-storage.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'cannot shrink from 1Gi to 512Mi')): true
+              (contains($stderr, 'destructive change')): true
+              (contains($stderr, 'spec.components[engine].storage.storageClass')): true
 
     - name: delete-instance
       try:

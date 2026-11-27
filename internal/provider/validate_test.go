@@ -12,8 +12,10 @@ import (
 	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller/validationtest"
 
+	"github.com/openeverest/provider-cloudnative-pg/internal/cnpg"
 	"github.com/openeverest/provider-cloudnative-pg/internal/common"
 )
 
@@ -55,12 +57,37 @@ func TestValidate(t *testing.T) {
 			mutate: func(in *corev1alpha1.Instance) {
 				in.Spec.Components[common.ComponentEngine].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("2")
 			},
-			want: []string{"spec.components[engine]"},
+			want: []string{"spec.components[engine].resources.requests[cpu]"},
 		},
 		{
 			name:   "invalid priority class name",
 			mutate: engineParameters(`{"priorityClassName":"Not_Valid"}`),
-			want:   []string{"spec.components[engine].parameters"},
+			want:   []string{"spec.components[engine].parameters.priorityClassName"},
+		},
+		{
+			name:   "name too long",
+			mutate: func(in *corev1alpha1.Instance) { in.Name = strings.Repeat("a", 51) },
+			want:   []string{"metadata.name"},
+		},
+		{
+			name: "every problem at once",
+			mutate: func(in *corev1alpha1.Instance) {
+				in.Name = strings.Repeat("a", 51)
+				engine := in.Spec.Components[common.ComponentEngine]
+				engine.Storage.Size = resource.MustParse("512Mi")
+				engine.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("128Mi")
+				engine.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
+				in.Spec.Components[common.ComponentEngine] = engine
+				engineParameters(`{"priorityClassName":"Not_Valid","walStorage":{"size":"512Mi"}}`)(in)
+			},
+			want: []string{
+				"metadata.name",
+				"spec.components[engine].parameters.priorityClassName",
+				"spec.components[engine].storage.size",
+				"spec.components[engine].resources.requests[memory]",
+				"spec.components[engine].resources.limits[memory]",
+				"spec.components[engine].parameters.walStorage.size",
+			},
 		},
 		{
 			name:   "logical decoding slots synchronized without HA slots",
@@ -229,6 +256,144 @@ func TestValidate(t *testing.T) {
 			assert.Equal(t, tt.wantWarnings, warned, "warnings: %v", got.Warnings)
 		})
 	}
+}
+
+// A reconciled Instance below the minimums, written before they existed,
+// keeps syncing with a warning; a new one is rejected.
+func TestValidateMinimumsOfReconciledInstance(t *testing.T) {
+	t.Parallel()
+	v := validationtest.New(t, New(), providerSpecPath)
+	small := func() *corev1alpha1.Instance {
+		in := validationtest.Load(t, instanceFixture)
+		in.Spec.Components[common.ComponentEngine].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("128Mi")
+		in.Spec.Components[common.ComponentEngine].Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
+		return in
+	}
+	memory := []string{"spec.components[engine].resources.requests[memory]", "spec.components[engine].resources.limits[memory]"}
+
+	created := v.Run(small(), nil)
+	assert.Equal(t, memory, errorFields(created), "errors: %v", created.Errors)
+
+	reconciled := small()
+	reconciled.Status.ObservedGeneration = 1
+	got := v.Run(reconciled, nil)
+	assert.Empty(t, got.Errors)
+	assert.Equal(t, memory, warningFields(got.Warnings), "warnings: %v", got.Warnings)
+
+	edited := small()
+	edited.Spec.Components[common.ComponentEngine].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("2")
+	got = v.Run(edited, reconciled)
+	assert.Empty(t, got.Errors, "an update keeping the stored Instance's minimums")
+	assert.Equal(t, memory, warningFields(got.Warnings), "warnings: %v", got.Warnings)
+
+	edited.Spec.Components[common.ComponentEngine].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("50m")
+	got = v.Run(edited, reconciled)
+	assert.Equal(t, []string{"spec.components[engine].resources.requests[cpu]"}, errorFields(got), "a new minimum missed: %v", got.Errors)
+}
+
+// TestValidateDestructiveUpdate checks the changes that lose data or cannot
+// be undone: rejected ones are Forbidden errors, admitted ones warnings, and
+// both start with the destructive marker.
+func TestValidateDestructiveUpdate(t *testing.T) {
+	t.Parallel()
+	v := validationtest.New(t, New(), providerSpecPath)
+	engine := func(mutate func(*corev1alpha1.ComponentSpec)) func(*corev1alpha1.Instance) {
+		return func(in *corev1alpha1.Instance) {
+			c := in.Spec.Components[common.ComponentEngine]
+			mutate(&c)
+			in.Spec.Components[common.ComponentEngine] = c
+		}
+	}
+	backups := func(enabled bool) func(*corev1alpha1.Instance) {
+		return func(in *corev1alpha1.Instance) { in.Spec.Backup = &corev1alpha1.InstanceBackupSpec{Enabled: enabled} }
+	}
+
+	tests := []struct {
+		name         string
+		old, updated func(*corev1alpha1.Instance)
+		want         []string
+		wantWarnings []string
+	}{
+		{
+			name:    "storage grown",
+			updated: engine(func(c *corev1alpha1.ComponentSpec) { c.Storage.Size = resource.MustParse("20Gi") }),
+		},
+		{
+			name:    "storage shrunk",
+			updated: engine(func(c *corev1alpha1.ComponentSpec) { c.Storage.Size = resource.MustParse("5Gi") }),
+			want:    []string{"spec.components[engine].storage.size"},
+		},
+		{
+			name:    "storage class changed",
+			updated: engine(func(c *corev1alpha1.ComponentSpec) { c.Storage.StorageClass = new("fast") }),
+			want:    []string{"spec.components[engine].storage.storageClass"},
+		},
+		{
+			name:    "WAL storage removed",
+			old:     engineParameters(`{"walStorage":{"size":"2Gi"}}`),
+			updated: engineParameters(`{}`),
+			want:    []string{"spec.components[engine].parameters.walStorage"},
+		},
+		{
+			name:         "major upgrade",
+			old:          func(in *corev1alpha1.Instance) { in.Spec.Version = "17.10" },
+			updated:      func(in *corev1alpha1.Instance) { in.Spec.Version = "18.7" },
+			wantWarnings: []string{"spec.version"},
+		},
+		{
+			name:    "major downgrade",
+			old:     func(in *corev1alpha1.Instance) { in.Spec.Version = "18.7" },
+			updated: func(in *corev1alpha1.Instance) { in.Spec.Version = "17.10" },
+			want:    []string{"spec.version"},
+		},
+		{
+			name:    "version left to the applied bundle",
+			old:     func(in *corev1alpha1.Instance) { in.Spec.Version = "17.10"; in.Status.Version = "17.10" },
+			updated: func(in *corev1alpha1.Instance) { in.Spec.Version = "" },
+		},
+		{
+			name:         "backups turned off",
+			old:          backups(true),
+			updated:      backups(false),
+			wantWarnings: []string{"spec.backup.enabled"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			old := validationtest.Load(t, instanceFixture)
+			old.Spec.Version = "18.7"
+			if tt.old != nil {
+				tt.old(old)
+			}
+			updated := old.DeepCopy()
+			tt.updated(updated)
+
+			got := v.Run(updated, old)
+			assert.Equal(t, tt.want, errorFields(got), "errors: %v", got.Errors)
+			assert.Equal(t, tt.wantWarnings, warningFields(got.Warnings), "warnings: %v", got.Warnings)
+			for _, w := range got.Warnings {
+				assert.Contains(t, w, cnpg.Destructive)
+			}
+		})
+	}
+}
+
+func errorFields(res controller.ValidationResult) []string {
+	var fields []string
+	for _, err := range res.Errors {
+		fields = append(fields, err.Field)
+	}
+	return fields
+}
+
+func warningFields(warnings []string) []string {
+	var fields []string
+	for _, w := range warnings {
+		fields = append(fields, strings.SplitN(w, ":", 2)[0])
+	}
+	return fields
 }
 
 // TestValidateUpdate checks the rules about changes, which need the stored
